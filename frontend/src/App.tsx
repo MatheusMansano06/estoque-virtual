@@ -14,6 +14,8 @@ function App() {
   const [notas, setNotas] = useState<NotaFiscal[]>([])
   const [loading, setLoading] = useState(false)
   const [message, setMessage] = useState('')
+  const [searchCode, setSearchCode] = useState('')
+  const [searchResult, setSearchResult] = useState<NotaFiscal | null>(null)
 
   // Carregar notas ao iniciar
   useEffect(() => {
@@ -27,6 +29,38 @@ function App() {
       setNotas(data.items || [])
     } catch (err) {
       console.error('Erro ao carregar:', err)
+    }
+  }
+
+  const handleSearch = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!searchCode.trim()) {
+      setMessage('Digite um código ou número de NF!')
+      return
+    }
+
+    try {
+      // Tenta buscar como número direto
+      const res = await fetch(
+        `http://localhost:8000/api/notas-fiscais?search=${encodeURIComponent(searchCode)}`
+      )
+      const data = await res.json()
+      const foundNota = data.items?.find(
+        (n: NotaFiscal) =>
+          n.numero_nf === searchCode ||
+          n.numero_nf.includes(searchCode) ||
+          searchCode.includes(n.numero_nf)
+      )
+
+      if (foundNota) {
+        setSearchResult(foundNota)
+        setMessage(`✅ Encontrada NF #${foundNota.numero_nf}`)
+      } else {
+        setSearchResult(null)
+        setMessage('❌ NF não encontrada')
+      }
+    } catch (err) {
+      setMessage(`❌ Erro na busca: ${err}`)
     }
   }
 
@@ -75,6 +109,65 @@ function App() {
       </header>
 
       <main className="container main-content">
+        {/* Busca por Código de Barras */}
+        <section className="card" style={{ marginBottom: '2rem' }}>
+          <h2>🔍 Buscar NF por Código de Barras</h2>
+          <form onSubmit={handleSearch} style={{ display: 'flex', gap: '0.5rem' }}>
+            <input
+              type="text"
+              placeholder="Digite o código de barras ou número da NF..."
+              value={searchCode}
+              onChange={(e) => setSearchCode(e.target.value)}
+              style={{
+                flex: 1,
+                padding: '0.75rem',
+                border: '1px solid #d0d0d0',
+                borderRadius: '4px',
+                fontSize: '1rem',
+              }}
+            />
+            <button
+              type="submit"
+              style={{
+                padding: '0.75rem 1.5rem',
+                backgroundColor: '#1e40af',
+                color: 'white',
+                border: 'none',
+                borderRadius: '4px',
+                cursor: 'pointer',
+                fontWeight: 'bold',
+              }}
+            >
+              Buscar
+            </button>
+          </form>
+
+          {searchResult && (
+            <div
+              style={{
+                marginTop: '1rem',
+                padding: '1rem',
+                backgroundColor: '#e3f2fd',
+                border: '1px solid #90caf9',
+                borderRadius: '4px',
+              }}
+            >
+              <h3 style={{ color: '#1e40af', marginBottom: '0.5rem' }}>
+                ✅ Resultado da Busca
+              </h3>
+              <p>
+                <strong>NF:</strong> {searchResult.numero_nf} - Série {searchResult.serie}
+              </p>
+              <p>
+                <strong>Fornecedor:</strong> {searchResult.fornecedor}
+              </p>
+              <p>
+                <strong>Status:</strong> {searchResult.status}
+              </p>
+            </div>
+          )}
+        </section>
+
         <div className="grid">
           {/* Upload */}
           <section className="card">
