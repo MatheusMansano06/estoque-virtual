@@ -96,6 +96,11 @@ function App() {
     estoque_reservado: 0
   })
   const [produtoConferindoAtualmente, setProdutoConferindoAtualmente] = useState<ItemNota | null>(null)
+  // Memória de vínculos (de-para fornecedor -> Olist)
+  const [sugestaoVinculo, setSugestaoVinculo] = useState<any>(null)
+  const [sugestaoDispensada, setSugestaoDispensada] = useState(false)
+  const [modalVinculosAberto, setModalVinculosAberto] = useState(false)
+  const [listaVinculos, setListaVinculos] = useState<any[]>([])
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   // Carregar notas ao iniciar
@@ -104,6 +109,78 @@ function App() {
     loadEstoque()
     loadDivergencias()
   }, [])
+
+  // Ao entrar na tela de vínculo, busca se esse produto já foi vinculado antes
+  useEffect(() => {
+    if (pagina === 'relacionamento_produto' && produtoSelecionado) {
+      setSugestaoVinculo(null)
+      setSugestaoDispensada(false)
+      const codigo = (produtoSelecionado as any).codigo_produto || ''
+      const descricao = (produtoSelecionado as any).descricao || ''
+      fetch(`http://localhost:8000/api/olist/sugestao-vinculo?codigo=${encodeURIComponent(codigo)}&descricao=${encodeURIComponent(descricao)}`)
+        .then((r) => r.json())
+        .then((d) => { if (d.encontrado) setSugestaoVinculo(d.vinculo) })
+        .catch(() => {})
+    }
+  }, [pagina, produtoSelecionado])
+
+  // Usa a sugestão: busca dados frescos (estoque) do anúncio e seleciona
+  const usarSugestao = async () => {
+    if (!sugestaoVinculo) return
+    const termo = sugestaoVinculo.olist_sku || sugestaoVinculo.nf_codigo || ''
+    try {
+      const res = await fetch(`http://localhost:8000/api/olist/produtos?q=${encodeURIComponent(termo)}`)
+      const data = await res.json()
+      const lista = data.produtos || []
+      const prod = lista.find((p: any) => String(p.id) === String(sugestaoVinculo.olist_produto_id)) || lista[0]
+      if (prod) {
+        handleSelecionarSKU(prod)
+      } else {
+        // fallback: usa os dados salvos (sem estoque ao vivo)
+        handleSelecionarSKU({
+          id: sugestaoVinculo.olist_produto_id,
+          sku: sugestaoVinculo.olist_sku,
+          nome: sugestaoVinculo.olist_nome,
+          preco: sugestaoVinculo.olist_preco,
+          estoque_atual: 0,
+          estoque_saldo: 0,
+        })
+      }
+    } catch {
+      // fallback silencioso
+    } finally {
+      setSugestaoVinculo(null)
+    }
+  }
+
+  const loadVinculos = async () => {
+    try {
+      const res = await fetch('http://localhost:8000/api/olist/vinculos')
+      const data = await res.json()
+      setListaVinculos(data.vinculos || [])
+    } catch (err) {
+      console.error('Erro ao carregar vínculos:', err)
+    }
+  }
+
+  const abrirModalVinculos = () => {
+    loadVinculos()
+    setModalVinculosAberto(true)
+  }
+
+  const deletarVinculo = async (id: number) => {
+    if (!window.confirm('Remover este vínculo salvo? Ele não será mais sugerido automaticamente.')) return
+    try {
+      await fetch('http://localhost:8000/api/olist/vinculos/deletar', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id }),
+      })
+      loadVinculos()
+    } catch (err) {
+      alert('Erro ao remover vínculo')
+    }
+  }
 
   const loadNotas = async () => {
     try {
@@ -303,7 +380,8 @@ function App() {
           item_id: itemId,
           olist_produto_id: produtoOlistSelecionado.id,
           olist_sku: produtoOlistSelecionado.sku,
-          olist_nome: produtoOlistSelecionado.nome
+          olist_nome: produtoOlistSelecionado.nome,
+          olist_preco: produtoOlistSelecionado.preco
         })
       })
       if (!resVinc.ok) {
@@ -916,7 +994,86 @@ function App() {
               </div>
             </section>
           )}
+
+          {/* BOTÃO DISCRETO: memória de vínculos */}
+          <div style={{ textAlign: 'center', marginTop: '2rem' }}>
+            <button
+              onClick={abrirModalVinculos}
+              style={{
+                background: 'transparent',
+                border: 'none',
+                color: '#9e9e9e',
+                fontSize: '0.8rem',
+                cursor: 'pointer',
+                textDecoration: 'underline',
+                padding: '0.5rem'
+              }}
+              onMouseEnter={(e) => (e.currentTarget.style.color = '#007acc')}
+              onMouseLeave={(e) => (e.currentTarget.style.color = '#9e9e9e')}
+            >
+              ⚙ Vínculos salvos (de-para fornecedor → Olist)
+            </button>
+          </div>
         </main>
+
+        {/* MODAL: VÍNCULOS SALVOS */}
+        {modalVinculosAberto && (
+          <div className="modal-overlay" onClick={() => setModalVinculosAberto(false)}>
+            <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ maxWidth: '900px', width: '90%' }}>
+              <div className="modal-header">
+                <h2>Vínculos Salvos (de-para fornecedor → Olist)</h2>
+                <button className="modal-close" onClick={() => setModalVinculosAberto(false)}>×</button>
+              </div>
+              <div className="modal-body">
+                <p style={{ color: '#666', marginBottom: '1.5rem', fontSize: '0.9rem' }}>
+                  Cada linha é um "apelido" de fornecedor que aponta para um anúncio da Olist.
+                  O mesmo anúncio pode ter vários apelidos (descrições/códigos diferentes).
+                  Esses vínculos são sugeridos automaticamente em notas futuras.
+                </p>
+                {listaVinculos.length === 0 ? (
+                  <p style={{ color: '#999', textAlign: 'center', padding: '2rem' }}>
+                    Nenhum vínculo salvo ainda. Eles são criados quando você vincula um produto à Olist.
+                  </p>
+                ) : (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', maxHeight: '55vh', overflowY: 'auto' }}>
+                    {listaVinculos.map((v) => (
+                      <div key={v.id} style={{
+                        display: 'grid',
+                        gridTemplateColumns: '1fr 1fr auto',
+                        gap: '1rem',
+                        alignItems: 'center',
+                        background: '#f9f9f9',
+                        border: '1px solid #e0e0e0',
+                        borderRadius: '6px',
+                        padding: '1rem'
+                      }}>
+                        <div>
+                          <p style={{ color: '#999', fontSize: '0.7rem', fontWeight: 700, margin: 0 }}>FORNECEDOR (NF)</p>
+                          <p style={{ color: '#1a1a1a', fontSize: '0.9rem', fontWeight: 600, margin: '0.15rem 0 0 0' }}>{v.nf_descricao}</p>
+                          <p style={{ color: '#666', fontSize: '0.75rem', margin: 0 }}>Cód: {v.nf_codigo || '-'}</p>
+                        </div>
+                        <div>
+                          <p style={{ color: '#999', fontSize: '0.7rem', fontWeight: 700, margin: 0 }}>ANÚNCIO OLIST</p>
+                          <p style={{ color: '#007acc', fontSize: '0.9rem', fontWeight: 600, margin: '0.15rem 0 0 0' }}>{v.olist_nome}</p>
+                          <p style={{ color: '#666', fontSize: '0.75rem', margin: 0 }}>SKU: {v.olist_sku} · usado {v.vezes_usado}x</p>
+                        </div>
+                        <button
+                          onClick={() => deletarVinculo(v.id)}
+                          style={{
+                            padding: '0.5rem 0.75rem', background: '#f44336', color: 'white',
+                            border: 'none', borderRadius: '4px', fontSize: '0.8rem', fontWeight: 600, cursor: 'pointer'
+                          }}
+                        >
+                          Remover
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
 
         {produtoSelecionado && (
           <ModalDetalhes
@@ -1463,6 +1620,48 @@ function App() {
                       {Math.round(produtoAtual.quantidade_nf)} un
                     </p>
                   </div>
+                </div>
+              </div>
+            )}
+
+            {/* SUGESTÃO AUTOMÁTICA (memória de vínculos) */}
+            {sugestaoVinculo && !sugestaoDispensada && !produtoOlistSelecionado.sku && (
+              <div style={{
+                background: '#fff8e1',
+                border: '2px solid #ffb300',
+                padding: '1.25rem 1.5rem',
+                borderRadius: '8px',
+                marginBottom: '1.5rem'
+              }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem' }}>
+                  <span style={{ fontSize: '1.2rem' }}>💡</span>
+                  <strong style={{ color: '#e65100' }}>Esse produto já foi vinculado antes!</strong>
+                </div>
+                <p style={{ color: '#5d4037', fontSize: '0.9rem', margin: '0 0 0.25rem 0' }}>
+                  Anúncio Olist: <strong>{sugestaoVinculo.olist_nome}</strong>
+                </p>
+                <p style={{ color: '#8d6e63', fontSize: '0.8rem', margin: '0 0 1rem 0' }}>
+                  SKU {sugestaoVinculo.olist_sku} · usado {sugestaoVinculo.vezes_usado}x · confirme se é o mesmo produto
+                </p>
+                <div style={{ display: 'flex', gap: '0.75rem' }}>
+                  <button
+                    onClick={usarSugestao}
+                    style={{
+                      padding: '0.6rem 1.25rem', background: '#2e7d32', color: 'white',
+                      border: 'none', borderRadius: '6px', fontWeight: 700, cursor: 'pointer', fontSize: '0.9rem'
+                    }}
+                  >
+                    ✓ Sim, é esse anúncio
+                  </button>
+                  <button
+                    onClick={() => setSugestaoDispensada(true)}
+                    style={{
+                      padding: '0.6rem 1.25rem', background: '#f0f0f0', color: '#1a1a1a',
+                      border: '1px solid #ddd', borderRadius: '6px', fontWeight: 600, cursor: 'pointer', fontSize: '0.9rem'
+                    }}
+                  >
+                    Não, buscar outro
+                  </button>
                 </div>
               </div>
             )}

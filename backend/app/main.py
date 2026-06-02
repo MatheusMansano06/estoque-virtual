@@ -13,7 +13,7 @@ import urllib.request
 import urllib.parse
 from dotenv import load_dotenv
 
-from app.models import NotaFiscal, ItemEstoque, ConfirmacaoEstoque, StatusEstoque
+from app.models import NotaFiscal, ItemEstoque, ConfirmacaoEstoque, StatusEstoque, VinculoOlist
 from app.utils.nfe_parser import NFeParsing
 from app.integracoes_olist import olist
 
@@ -636,6 +636,34 @@ async def vincular_produto_olist(request: Request):
         item.olist_nome = olist_nome
         item.vinculado_em = datetime.utcnow()
 
+        # MEMÓRIA DE VÍNCULOS: salva o de-para (descricao/codigo do fornecedor -> anúncio Olist)
+        # para sugerir automaticamente em notas futuras com a mesma descrição/código.
+        olist_preco = float(data.get("olist_preco", 0) or 0)
+        vinculo = db.query(VinculoOlist).filter(
+            VinculoOlist.nf_descricao == item.descricao,
+            VinculoOlist.olist_produto_id == str(olist_produto_id)
+        ).first()
+
+        if vinculo:
+            # Já existe esse de-para: atualiza e conta uso
+            vinculo.nf_codigo = item.codigo_produto
+            vinculo.olist_sku = olist_sku
+            vinculo.olist_nome = olist_nome
+            vinculo.olist_preco = olist_preco
+            vinculo.vezes_usado = (vinculo.vezes_usado or 1) + 1
+            vinculo.atualizado_em = datetime.utcnow()
+        else:
+            vinculo = VinculoOlist(
+                nf_codigo=item.codigo_produto,
+                nf_descricao=item.descricao,
+                olist_produto_id=str(olist_produto_id),
+                olist_sku=olist_sku,
+                olist_nome=olist_nome,
+                olist_preco=olist_preco,
+                vezes_usado=1,
+            )
+            db.add(vinculo)
+
         db.commit()
 
         return JSONResponse({
@@ -697,6 +725,91 @@ async def atualizar_estoque_olist(request: Request):
         return JSONResponse({"error": str(e)}, status_code=500)
     finally:
         db.close()
+
+async def olist_sugestao_vinculo(request: Request):
+    """
+    Dado o código/descrição de um produto da NF, retorna o anúncio Olist
+    que já foi vinculado antes a esse mesmo produto (se existir).
+    Casa por código exato OU descrição exata.
+    """
+    codigo = request.query_params.get("codigo", "").strip()
+    descricao = request.query_params.get("descricao", "").strip()
+
+    db = SessionLocal()
+    try:
+        vinculo = None
+        # 1) Tenta por código do fornecedor (mais confiável)
+        if codigo:
+            vinculo = db.query(VinculoOlist).filter(
+                VinculoOlist.nf_codigo == codigo
+            ).order_by(VinculoOlist.vezes_usado.desc()).first()
+        # 2) Se não achou, tenta por descrição exata
+        if not vinculo and descricao:
+            vinculo = db.query(VinculoOlist).filter(
+                VinculoOlist.nf_descricao == descricao
+            ).order_by(VinculoOlist.vezes_usado.desc()).first()
+
+        if not vinculo:
+            return JSONResponse({"encontrado": False})
+
+        return JSONResponse({
+            "encontrado": True,
+            "vinculo": {
+                "id": vinculo.id,
+                "nf_codigo": vinculo.nf_codigo,
+                "nf_descricao": vinculo.nf_descricao,
+                "olist_produto_id": vinculo.olist_produto_id,
+                "olist_sku": vinculo.olist_sku,
+                "olist_nome": vinculo.olist_nome,
+                "olist_preco": vinculo.olist_preco,
+                "vezes_usado": vinculo.vezes_usado,
+            }
+        })
+    finally:
+        db.close()
+
+
+async def olist_listar_vinculos(request: Request):
+    """Lista todos os vínculos salvos (de-para fornecedor -> Olist)"""
+    db = SessionLocal()
+    try:
+        vinculos = db.query(VinculoOlist).order_by(VinculoOlist.atualizado_em.desc()).all()
+        return JSONResponse({
+            "total": len(vinculos),
+            "vinculos": [{
+                "id": v.id,
+                "nf_codigo": v.nf_codigo,
+                "nf_descricao": v.nf_descricao,
+                "olist_produto_id": v.olist_produto_id,
+                "olist_sku": v.olist_sku,
+                "olist_nome": v.olist_nome,
+                "olist_preco": v.olist_preco,
+                "vezes_usado": v.vezes_usado,
+                "criado_em": v.criado_em.isoformat() if v.criado_em else None,
+            } for v in vinculos]
+        })
+    finally:
+        db.close()
+
+
+async def olist_deletar_vinculo(request: Request):
+    """Remove um vínculo salvo da memória"""
+    db = SessionLocal()
+    try:
+        data = await request.json()
+        vinculo_id = data.get("id")
+        v = db.query(VinculoOlist).filter(VinculoOlist.id == vinculo_id).first()
+        if not v:
+            return JSONResponse({"error": "Vínculo não encontrado"}, status_code=404)
+        db.delete(v)
+        db.commit()
+        return JSONResponse({"sucesso": True, "mensagem": "Vínculo removido"})
+    except Exception as e:
+        db.rollback()
+        return JSONResponse({"error": str(e)}, status_code=500)
+    finally:
+        db.close()
+
 
 async def olist_conectar(request: Request):
     """Redireciona o usuário para autorizar o app no Olist"""
@@ -769,6 +882,10 @@ routes = [
     Route("/api/olist/produtos", buscar_produtos_olist, methods=["GET"]),
     Route("/api/olist/vincular-produto", vincular_produto_olist, methods=["POST"]),
     Route("/api/olist/atualizar-estoque", atualizar_estoque_olist, methods=["POST"]),
+    # Memória de vínculos (de-para fornecedor -> Olist)
+    Route("/api/olist/sugestao-vinculo", olist_sugestao_vinculo, methods=["GET"]),
+    Route("/api/olist/vinculos", olist_listar_vinculos, methods=["GET"]),
+    Route("/api/olist/vinculos/deletar", olist_deletar_vinculo, methods=["POST"]),
 ]
 
 app = Starlette(routes=routes)

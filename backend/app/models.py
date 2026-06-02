@@ -75,3 +75,26 @@ class ConfirmacaoEstoque(Base):
     data_confirmacao = Column(DateTime, default=datetime.utcnow)
     vinculado_olist = Column(String(100), nullable=True)  # SKU do anúncio na Olist
     observacoes = Column(Text, nullable=True)
+
+
+class VinculoOlist(Base):
+    """
+    Memória de vínculos: de-para entre a descrição/código de um produto
+    na nota fiscal (que varia por fornecedor) e o anúncio na Olist.
+    Um mesmo anúncio Olist pode ter vários apelidos (linhas) diferentes.
+    """
+    __tablename__ = "vinculos_olist"
+
+    id = Column(Integer, primary_key=True)
+    # Lado do fornecedor (vem da NF) - usado para casar em notas futuras
+    nf_codigo = Column(String(100), index=True, nullable=True)
+    nf_descricao = Column(String(255), index=True)
+    # Lado da Olist (o anúncio que foi vinculado)
+    olist_produto_id = Column(String(100))
+    olist_sku = Column(String(100))
+    olist_nome = Column(String(255))
+    olist_preco = Column(Float, default=0)
+    # Metadados
+    vezes_usado = Column(Integer, default=1)
+    criado_em = Column(DateTime, default=datetime.utcnow)
+    atualizado_em = Column(DateTime, default=datetime.utcnow)
