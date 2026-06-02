@@ -1,6 +1,7 @@
 import xml.etree.ElementTree as ET
-from typing import List, Dict, Optional
+from typing import Dict, Optional
 import logging
+import json
 
 logger = logging.getLogger(__name__)
 

@@ -24,7 +24,7 @@ class ItemEstoqueResponse(ItemEstoqueBase):
     data_criacao: datetime
 
     class Config:
-        from_attributes = True
+        orm_mode = True
 
 class NotaFiscalBase(BaseModel):
     numero_nf: str
@@ -45,7 +45,7 @@ class NotaFiscalResponse(NotaFiscalBase):
     itens: List[ItemEstoqueResponse]
 
     class Config:
-        from_attributes = True
+        orm_mode = True
 
 class NotaFiscalUploadResponse(BaseModel):
     id: int
@@ -63,4 +63,4 @@ class AnuncioResponse(BaseModel):
     estoque_atual: int
 
     class Config:
-        from_attributes = True
+        orm_mode = True
