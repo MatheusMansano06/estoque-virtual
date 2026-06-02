@@ -1,0 +1,150 @@
+.list-container {
+  width: 100%;
+}
+
+.loading,
+.error,
+.empty {
+  padding: 2rem;
+  text-align: center;
+  border-radius: 6px;
+  font-weight: 500;
+}
+
+.loading {
+  background: #e3f2fd;
+  color: #1976d2;
+}
+
+.error {
+  background: #ffebee;
+  color: #c62828;
+}
+
+.empty {
+  background: #f5f5f5;
+  color: #999;
+}
+
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.nota-item {
+  border: 1px solid #e0e0e0;
+  border-radius: 6px;
+  padding: 1.5rem;
+  background: white;
+  transition: all 0.3s ease;
+  cursor: pointer;
+}
+
+.nota-item:hover {
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+  border-color: #667eea;
+}
+
+.nota-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 1rem;
+  padding-bottom: 1rem;
+  border-bottom: 1px solid #f0f0f0;
+}
+
+.nota-header h3 {
+  margin: 0;
+  color: #333;
+  font-size: 1.1rem;
+}
+
+.status-badge {
+  padding: 0.4rem 0.8rem;
+  border-radius: 20px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.status-processado {
+  background: #d4edda;
+  color: #155724;
+}
+
+.status-quarentena {
+  background: #fff3cd;
+  color: #856404;
+}
+
+.status-confirmado {
+  background: #cfe2ff;
+  color: #084298;
+}
+
+.nota-details {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.nota-details p {
+  margin: 0;
+  color: #666;
+  font-size: 0.95rem;
+}
+
+.nota-details strong {
+  color: #333;
+}
+
+.items-preview {
+  margin-top: 1rem;
+  padding-top: 1rem;
+  border-top: 1px solid #f0f0f0;
+}
+
+.items-preview h4 {
+  margin: 0 0 0.5rem 0;
+  color: #555;
+  font-size: 0.95rem;
+}
+
+.items-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.item-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.5rem 0;
+  font-size: 0.9rem;
+}
+
+.item-desc {
+  color: #666;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.item-qty {
+  color: #667eea;
+  font-weight: 600;
+  margin-left: 1rem;
+  white-space: nowrap;
+}
+
+.item-more {
+  color: #999;
+  font-size: 0.85rem;
+  font-style: italic;
+  padding: 0.5rem 0;
+}
