@@ -58,6 +58,10 @@ temp/
 olist_token.json
 backend/olist_token.json
 
+# Bundle de segredos para transferir entre PCs (NUNCA commitar)
+estoque-virtual-secrets.zip
+*-secrets.zip
+
 # Lixo gerado por testes/builds
 nul
 nul.css
