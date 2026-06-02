@@ -1,6 +1,11 @@
 import { useState } from 'react'
 import './ModalDetalhes.css'
 
+// ===== NÚMERO DE WHATSAPP DO FORNECEDOR/RESPONSÁVEL =====
+// Formato: código do país (55) + DDD + número, somente dígitos.
+// Ex: 55 + 19 + 978149245 = 5519978149245
+const NUMERO_WHATSAPP = '5519978149245'
+
 interface Produto {
   id_item: number
   descricao: string
@@ -46,6 +51,13 @@ export function ModalDetalhesNota({
   const temDivergencia = Math.abs(divergencia) > 0.01
 
   const handleConfirmar = async () => {
+    // Pré-abre a aba do WhatsApp AINDA no clique do usuário (evita bloqueio de pop-up).
+    // Só preenchemos a URL depois que a divergência for registrada.
+    let janelaWhatsApp: Window | null = null
+    if (temDivergencia) {
+      janelaWhatsApp = window.open('', '_blank')
+    }
+
     setLoading(true)
     try {
       if (temDivergencia) {
@@ -92,11 +104,22 @@ export function ModalDetalhesNota({
 
         if (!resDivergencia.ok) {
           alert('❌ Erro ao registrar divergência')
+          if (janelaWhatsApp) janelaWhatsApp.close()
           return
         }
 
-        const dataDivergencia = await resDivergencia.json()
-        alert(`✅ Divergência registrada!\n\nMensagem será enviada para: ${dataDivergencia.numero_whatsapp || '19 97814-9245'}\n\nVamos vincular na Olist e subir ${Math.round(qtdConfirmada)} un.`)
+        await resDivergencia.json()
+
+        // Preenche a aba do WhatsApp (já aberta no clique) com a mensagem pronta
+        const urlWhatsApp = `https://wa.me/${NUMERO_WHATSAPP}?text=${encodeURIComponent(textoMensagem)}`
+        if (janelaWhatsApp) {
+          janelaWhatsApp.location.href = urlWhatsApp
+        } else {
+          // fallback caso o navegador tenha bloqueado a pré-abertura
+          window.open(urlWhatsApp, '_blank')
+        }
+
+        alert(`✅ Divergência registrada!\n\nAbri o WhatsApp com a mensagem pronta. É só clicar em ENVIAR na conversa.\n\nDepois vamos vincular na Olist e subir ${Math.round(qtdConfirmada)} un.`)
 
         // Callback para ir direto vincular/subir na Olist com a qtd recebida
         if (onDivergenciaConfirmada) {
