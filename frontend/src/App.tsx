@@ -14,8 +14,8 @@ function App() {
     <div className="app">
       <header className="header">
         <div className="container">
-          <h1>📦 Estoque Virtual</h1>
-          <p>Sistema de entrada de estoque via NF-e</p>
+          <h1>📦 Estoque Virtual - NF-e</h1>
+          <p>Sistema de entrada de estoque via Nota Fiscal Eletrônica</p>
         </div>
       </header>
 
