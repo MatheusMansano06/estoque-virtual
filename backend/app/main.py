@@ -379,18 +379,16 @@ async def registrar_divergencia(request: Request):
         db.add(confirmacao)
         db.commit()
 
-        # TODO: Integração com WhatsApp API
-        # Por enquanto, apenas logamos a mensagem
         numero_whatsapp = "19978149245"  # Número padrão
 
-        # Aqui você pode integrar com um serviço de WhatsApp
-        # como Twilio, WhatsApp Business API, etc.
-        print(f"\n{'='*60}")
-        print(f"DIVERGÊNCIA REGISTRADA - MENSAGEM WHATSAPP")
-        print(f"{'='*60}")
-        print(f"Para: {numero_whatsapp}")
-        print(f"Mensagem:\n{mensagem_whatsapp}")
-        print(f"{'='*60}\n")
+        # Log seguro: evita UnicodeEncodeError no console do Windows (cp1252)
+        # quando a mensagem contem emojis/acentos. O envio real e feito no
+        # frontend via link wa.me.
+        try:
+            print(f"[DIVERGENCIA] item={item_id} tipo={tipo_divergencia} "
+                  f"qtd_confirmada={quantidade_confirmada} destino_whatsapp={numero_whatsapp}")
+        except Exception:
+            pass
 
         return JSONResponse({
             "sucesso": True,
