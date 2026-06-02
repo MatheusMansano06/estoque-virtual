@@ -1,5 +1,6 @@
 import xml.etree.ElementTree as ET
 from typing import Dict, Optional
+from datetime import datetime
 import logging
 import json
 
@@ -7,6 +8,23 @@ logger = logging.getLogger(__name__)
 
 class NFeParsing:
     """Parse NF-e XML files to extract products and quantities"""
+
+    @staticmethod
+    def parse_datetime(iso_string: Optional[str]) -> Optional[datetime]:
+        """Convert ISO 8601 datetime string to Python datetime object"""
+        if not iso_string:
+            return None
+        try:
+            # Handle ISO format with timezone (e.g., 2024-06-02T10:30:00-03:00)
+            if '+' in iso_string or iso_string.count('-') > 2:
+                # Remove timezone info for SQLite compatibility
+                if 'T' in iso_string:
+                    dt_part = iso_string.split('+')[0].split('-')[:-1]
+                    # This is a bit tricky, let's use a simpler approach
+                    return datetime.fromisoformat(iso_string.replace('Z', '+00:00')[:19])
+            return datetime.fromisoformat(iso_string[:19])
+        except:
+            return None
 
     @staticmethod
     def parse_xml(file_content: bytes) -> Dict:
@@ -36,9 +54,10 @@ class NFeParsing:
             ide = root.find('.//nfe:ide', ns)
             emit = root.find('.//nfe:emit', ns)
 
-            numero_nf = ide.find('nfe:cUF', ns).text if ide is not None else "N/A"
+            numero_nf = ide.find('nfe:nNF', ns).text if ide is not None else "N/A"
             serie = ide.find('nfe:serie', ns).text if ide is not None else "1"
-            data_emissao = ide.find('nfe:dhEmi', ns).text if ide is not None else None
+            data_emissao_str = ide.find('nfe:dhEmi', ns).text if ide is not None else None
+            data_emissao = NFeParsing.parse_datetime(data_emissao_str)
             fornecedor = emit.find('nfe:xNome', ns).text if emit is not None else "Desconhecido"
 
             # Extract items

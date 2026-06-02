@@ -53,3 +53,12 @@ out/
 # Uploads
 uploads/
 temp/
+
+# Tokens / segredos da integração Olist (NUNCA commitar)
+olist_token.json
+backend/olist_token.json
+
+# Lixo gerado por testes/builds
+nul
+nul.css
+*.log

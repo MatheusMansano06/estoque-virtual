@@ -44,6 +44,13 @@ class ItemEstoque(Base):
     divergencia = Column(String(100), nullable=True)
     data_criacao = Column(DateTime, default=datetime.utcnow)
 
+    # Campos para integração com Olist
+    olist_produto_id = Column(String(100), nullable=True)  # ID do produto na Olist
+    olist_sku = Column(String(100), nullable=True)  # SKU do anúncio na Olist
+    olist_nome = Column(String(255), nullable=True)  # Nome do anúncio na Olist
+    vinculado_em = Column(DateTime, nullable=True)  # Quando foi vinculado
+    estoque_olist_atualizado_em = Column(DateTime, nullable=True)  # Última atualização de estoque
+
     nota_fiscal = relationship("NotaFiscal", back_populates="itens")
 
 class Anuncio(Base):
@@ -57,3 +64,14 @@ class Anuncio(Base):
     preco = Column(Float)
     estoque_atual = Column(Integer, default=0)
     data_atualizacao = Column(DateTime, default=datetime.utcnow)
+
+class ConfirmacaoEstoque(Base):
+    __tablename__ = "confirmacoes_estoque"
+
+    id = Column(Integer, primary_key=True)
+    item_estoque_id = Column(Integer, ForeignKey("itens_estoque.id"))
+    quantidade_confirmada = Column(Float)
+    divergencia = Column(String(255), nullable=True)
+    data_confirmacao = Column(DateTime, default=datetime.utcnow)
+    vinculado_olist = Column(String(100), nullable=True)  # SKU do anúncio na Olist
+    observacoes = Column(Text, nullable=True)
