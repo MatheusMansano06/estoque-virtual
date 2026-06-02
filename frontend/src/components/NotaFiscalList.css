@@ -7,23 +7,23 @@
 .empty {
   padding: 2rem;
   text-align: center;
-  border-radius: 6px;
-  font-weight: 500;
+  border-radius: 8px;
+  font-weight: 600;
 }
 
 .loading {
-  background: #e3f2fd;
-  color: #1976d2;
+  background: #dbeafe;
+  color: #1e3a8a;
 }
 
 .error {
-  background: #ffebee;
-  color: #c62828;
+  background: #fee2e2;
+  color: #991b1b;
 }
 
 .empty {
-  background: #f5f5f5;
-  color: #999;
+  background: #f3f4f6;
+  color: #6b7280;
 }
 
 .list {
@@ -33,17 +33,19 @@
 }
 
 .nota-item {
-  border: 1px solid #e0e0e0;
-  border-radius: 6px;
+  border: 2px solid #e5e7eb;
+  border-radius: 10px;
   padding: 1.5rem;
   background: white;
   transition: all 0.3s ease;
   cursor: pointer;
+  border-left: 5px solid #fbbf24;
 }
 
 .nota-item:hover {
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
-  border-color: #667eea;
+  box-shadow: 0 8px 16px rgba(37, 99, 235, 0.2);
+  border-color: #2563eb;
+  transform: translateY(-2px);
 }
 
 .nota-header {
@@ -52,36 +54,37 @@
   align-items: center;
   margin-bottom: 1rem;
   padding-bottom: 1rem;
-  border-bottom: 1px solid #f0f0f0;
+  border-bottom: 2px solid #fbbf24;
 }
 
 .nota-header h3 {
   margin: 0;
-  color: #333;
-  font-size: 1.1rem;
+  color: #1e3a8a;
+  font-size: 1.3rem;
+  font-weight: 700;
 }
 
 .status-badge {
-  padding: 0.4rem 0.8rem;
+  padding: 0.5rem 1rem;
   border-radius: 20px;
-  font-size: 0.85rem;
-  font-weight: 600;
+  font-size: 0.8rem;
+  font-weight: 700;
   text-transform: uppercase;
 }
 
 .status-processado {
-  background: #d4edda;
-  color: #155724;
+  background: #dcfce7;
+  color: #166534;
 }
 
 .status-quarentena {
-  background: #fff3cd;
-  color: #856404;
+  background: #fef3c7;
+  color: #92400e;
 }
 
 .status-confirmado {
-  background: #cfe2ff;
-  color: #084298;
+  background: #dbeafe;
+  color: #1e40af;
 }
 
 .nota-details {
@@ -93,24 +96,26 @@
 
 .nota-details p {
   margin: 0;
-  color: #666;
+  color: #6b7280;
   font-size: 0.95rem;
 }
 
 .nota-details strong {
-  color: #333;
+  color: #1e3a8a;
+  font-weight: 700;
 }
 
 .items-preview {
   margin-top: 1rem;
   padding-top: 1rem;
-  border-top: 1px solid #f0f0f0;
+  border-top: 2px solid #fbbf24;
 }
 
 .items-preview h4 {
-  margin: 0 0 0.5rem 0;
-  color: #555;
-  font-size: 0.95rem;
+  margin: 0 0 0.75rem 0;
+  color: #1e3a8a;
+  font-size: 1rem;
+  font-weight: 700;
 }
 
 .items-list {
@@ -123,27 +128,33 @@
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 0.5rem 0;
-  font-size: 0.9rem;
+  padding: 0.6rem;
+  font-size: 0.95rem;
+  background: #f9fafb;
+  border-radius: 6px;
 }
 
 .item-desc {
-  color: #666;
+  color: #374151;
   flex: 1;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  font-weight: 500;
 }
 
 .item-qty {
-  color: #667eea;
-  font-weight: 600;
+  color: #2563eb;
+  font-weight: 700;
   margin-left: 1rem;
   white-space: nowrap;
+  background: #dbeafe;
+  padding: 0.3rem 0.6rem;
+  border-radius: 4px;
 }
 
 .item-more {
-  color: #999;
+  color: #9ca3af;
   font-size: 0.85rem;
   font-style: italic;
   padding: 0.5rem 0;
