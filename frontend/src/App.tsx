@@ -690,6 +690,7 @@ function App() {
         })
         setSugestaoVinculo(null)
         setProdutoOlistSKU('')
+        return
       } else {
         alert('⚠️ Produto vinculado, mas falha ao atualizar estoque: ' + (dataEst.error || 'desconhecido'))
       }
