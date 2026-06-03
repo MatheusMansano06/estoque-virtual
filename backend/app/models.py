@@ -20,7 +20,6 @@ class NotaFiscal(Base):
     numero_nf = Column(String(20), unique=True, index=True)
     serie = Column(String(10))
     fornecedor = Column(String(255))
-    fornecedor_id = Column(Integer, ForeignKey("fornecedores.id"), nullable=True)  # Novo: link com Fornecedor
     cnpj = Column(String(20), nullable=True)
     endereco = Column(String(255), nullable=True)
     data_emissao = Column(DateTime)
@@ -32,7 +31,6 @@ class NotaFiscal(Base):
     erros = Column(Text, nullable=True)
 
     itens = relationship("ItemEstoque", back_populates="nota_fiscal", cascade="all, delete-orphan")
-    fornecedor_obj = relationship("Fornecedor", back_populates="notas_fiscais")
 
 class ItemEstoque(Base):
     __tablename__ = "itens_estoque"
@@ -119,7 +117,6 @@ class Fornecedor(Base):
     criado_em = Column(DateTime, default=datetime.utcnow)
     ativo = Column(Integer, default=1)  # 1 = ativo, 0 = inativo
 
-    notas_fiscais = relationship("NotaFiscal", back_populates="fornecedor_obj")
     historico_compras = relationship("HistoricoCompra", back_populates="fornecedor", cascade="all, delete-orphan")
     notificacoes = relationship("NotificacaoFornecedor", back_populates="fornecedor", cascade="all, delete-orphan")
 
