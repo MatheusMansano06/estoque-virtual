@@ -1,10 +1,10 @@
 import { useState, useEffect, useRef } from 'react'
 import './App.css'
-import { ModalDetalhes } from './ModalDetalhes'
-import { ModalDetalhesNota } from './ModalDetalhesNota'
-import { ModalDetalhesNotaFiscal } from './ModalDetalhesNotaFiscal'
+import { ModalDetalhes } from './ModalDetalhes.jsx'
+import { ModalDetalhesNota } from './ModalDetalhesNota.jsx'
+import { ModalDetalhesNotaFiscal } from './ModalDetalhesNotaFiscal.jsx'
+import { FornecedoresManager } from './components/FornecedoresManager'
 import { baixarMultiplosOuPdfs } from './services/api'
-import BuscadorKit from './components/BuscadorKit'
 
 interface NotaFiscal {
   id: number
@@ -49,7 +49,7 @@ interface ProdutoEstoque {
   }>
 }
 
-type Pagina = 'inicial' | 'conferencia' | 'produtos_nota' | 'relacionamento_produto'
+type Pagina = 'inicial' | 'conferencia' | 'produtos_nota' | 'relacionamento_produto' | 'fornecedores'
 
 interface Divergencia {
   item_id: number
@@ -487,7 +487,38 @@ function App() {
     }
   }
 
-  const handleSelecionarSKU = (produto: any) => {
+  const handleSelecionarSKU = async (produto: any) => {
+    // Tentar detectar kit automaticamente
+    try {
+      const resDeteccao = await fetch(`http://localhost:8000/api/olist/detectar-kit?sku=${encodeURIComponent(produto.sku.toUpperCase())}`)
+      const dataDeteccao = await resDeteccao.json()
+
+      if (dataDeteccao.eh_kit) {
+        // É um kit! Extrair componentes
+        console.log('[KIT-DETECTADO]', dataDeteccao)
+        setKitDetectado({
+          eh_kit: true,
+          sku_kit: dataDeteccao.sku_principal,
+          nome_kit: dataDeteccao.nome_kit,
+          skus_componentes: dataDeteccao.componentes.map((c: any) => c.sku),
+          quantidade_componentes: dataDeteccao.componentes.length,
+          id_kit: 0
+        })
+        setComponentesKit(dataDeteccao.componentes.map((c: any) => ({
+          sku: c.sku,
+          olist_produto_id: c.id,
+          olist_nome: c.nome || c.descricao,
+          olist_preco: c.preco
+        })))
+        setProdutoOlistSKU('')
+        setSugestoesSKU([])
+        return
+      }
+    } catch (err) {
+      console.log('[KIT-AUTO] Detecção falhou, usando fluxo normal:', err)
+    }
+
+    // Não é kit ou detecção falhou - usar fluxo normal
     setProdutoOlistSelecionado({
       id: produto.id || '',
       sku: produto.sku || '',
@@ -540,14 +571,34 @@ function App() {
         const sucessos = data.resultados_componentes.filter((r: any) => r.sucesso).length
         const falhas = data.resultados_componentes.filter((r: any) => !r.sucesso).length
 
-        const falhaMsg = falhas > 0 ? `Falhas: ${falhas}\n\n` : ''
-        alert(
-          `✅ Kit vinculado com sucesso!\n\n` +
-          `Kit: ${kit.nome_kit}\n` +
-          `Componentes atualizados: ${sucessos}\n` +
-          falhaMsg +
-          `Estoque de cada componente: +${qtdNF} un`
-        )
+        let detalhesMsg = `✅ Kit vinculado com sucesso!\n\n`
+        detalhesMsg += `Kit: ${kit.nome_kit}\n`
+        detalhesMsg += `Componentes atualizados: ${sucessos}/${componentes.length}\n\n`
+
+        // Mostrar detalhes de cada componente
+        data.resultados_componentes.forEach((comp: any) => {
+          if (comp.sucesso) {
+            detalhesMsg += `✅ ${comp.sku}\n`
+            detalhesMsg += `   ${comp.estoque_anterior} + ${comp.quantidade_adicionada} = ${comp.novo_estoque} un\n`
+          } else {
+            detalhesMsg += `❌ ${comp.sku} - Erro: ${comp.erro}\n`
+          }
+        })
+
+        alert(detalhesMsg)
+
+        // Recarregar nota para atualizar status do item
+        const nfId = notaDetalheAberta?.id ?? notaSelecionada?.id
+        if (nfId) {
+          try {
+            const resNota = await fetch(`http://localhost:8000/api/notas-fiscais/${nfId}`)
+            const dataNota = await resNota.json()
+            setProdutosNota(dataNota.itens || [])
+            setNotaDetalheAberta(dataNota)
+          } catch (err) {
+            console.error('Erro ao recarregar nota:', err)
+          }
+        }
 
         await loadNotas()
         await loadDivergencias()
@@ -819,6 +870,37 @@ function App() {
                     {loading ? 'Processando...' : 'Enviar NF-e'}
                   </button>
                 </form>
+
+                {/* Botão de Fornecedores */}
+                <div style={{ marginTop: '1rem', paddingTop: '1rem', borderTop: '1px solid #e0e0e0' }}>
+                  <button
+                    onClick={() => setPagina('fornecedores')}
+                    style={{
+                      width: '100%',
+                      padding: '0.75rem 1rem',
+                      background: '#fff',
+                      color: '#333',
+                      border: '1px solid #ddd',
+                      borderRadius: '4px',
+                      cursor: 'pointer',
+                      fontWeight: 600,
+                      fontSize: '0.95rem',
+                      transition: 'all 0.2s ease'
+                    }}
+                    onMouseEnter={(e) => {
+                      const el = e.currentTarget as HTMLElement
+                      el.style.background = '#f5f5f5'
+                      el.style.borderColor = '#999'
+                    }}
+                    onMouseLeave={(e) => {
+                      const el = e.currentTarget as HTMLElement
+                      el.style.background = '#fff'
+                      el.style.borderColor = '#ddd'
+                    }}
+                  >
+                    Fornecedores
+                  </button>
+                </div>
               </div>
             </div>
 
@@ -2000,6 +2082,15 @@ function App() {
     )
   }
 
+  // ===== PÁGINA DE FORNECEDORES =====
+  if (pagina === 'fornecedores') {
+    return (
+      <FornecedoresManager
+        onVoltar={voltarParaInicial}
+      />
+    )
+  }
+
   // ===== PÁGINA DE CONFERÊNCIA =====
   if (pagina === 'conferencia' && notaSelecionada) {
     const totalNota = notaSelecionada.itens?.reduce(
@@ -2194,19 +2285,6 @@ function App() {
               </div>
             )}
 
-            {/* BUSCADOR DE KITS - SEMPRE VISÍVEL PRIMEIRO */}
-            {!kitDetectado && !produtoOlistSelecionado.sku && (
-              <BuscadorKit
-                itemId={(produtoSelecionado as any)?.id ?? (produtoSelecionado as any)?.id_item}
-                onKitDetectado={(kit, componentes) => {
-                  setKitDetectado(kit)
-                  setComponentesKit(componentes)
-                }}
-                onSemKit={() => {
-                  // Kit não encontrado, usuário pode buscar um SKU normal
-                }}
-              />
-            )}
 
             {/* SUGESTÃO AUTOMÁTICA (memória de vínculos) */}
             {sugestaoVinculo && !sugestaoDispensada && !produtoOlistSelecionado.sku && !kitDetectado && (

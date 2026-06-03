@@ -119,3 +119,91 @@ class KitOlist(Base):
     ativo = Column(Integer, default=1)  # 1=ativo, 0=inativo
     criado_em = Column(DateTime, default=datetime.utcnow)
     atualizado_em = Column(DateTime, default=datetime.utcnow)
+
+
+class HistoricoVendas(Base):
+    """
+    Histórico de vendas/pedidos da Olist.
+    Rastreia cada venda para calcular frequência, tendências e previsões de estoque.
+    """
+    __tablename__ = "historico_vendas"
+
+    id = Column(Integer, primary_key=True)
+    olist_sku = Column(String(100), index=True)
+    olist_produto_id = Column(String(100))
+    data_venda = Column(DateTime, index=True)
+    quantidade = Column(Integer)
+    preco_unitario = Column(Float)
+    receita = Column(Float)
+    marketplace = Column(String(50), default="olist")
+    pedido_id = Column(String(100), nullable=True)
+    data_sincronizacao = Column(DateTime, default=datetime.utcnow)
+    criado_em = Column(DateTime, default=datetime.utcnow)
+
+
+class FornecedorConfiguracao(Base):
+    """
+    Configuração e histórico de cada fornecedor.
+    Rastreia lead time, contato e frequência de compra.
+    """
+    __tablename__ = "fornecedor_configuracao"
+
+    id = Column(Integer, primary_key=True)
+    nome_fornecedor = Column(String(255), unique=True, index=True)
+    cnpj = Column(String(20), nullable=True)
+    email = Column(String(255), nullable=True)
+    telefone = Column(String(20), nullable=True)
+    lead_time_dias_medio = Column(Float, nullable=True)
+    lead_time_min = Column(Float, nullable=True)
+    lead_time_max = Column(Float, nullable=True)
+    numero_compras = Column(Integer, default=0)
+    ativo = Column(Integer, default=1)
+    data_ultima_compra = Column(DateTime, nullable=True)
+    criado_em = Column(DateTime, default=datetime.utcnow)
+    atualizado_em = Column(DateTime, default=datetime.utcnow)
+
+
+class HistoricoPrecos(Base):
+    """
+    Histórico de preços por fornecedor e produto.
+    Permite identificar tendências de preço e comparação entre fornecedores.
+    """
+    __tablename__ = "historico_precos"
+
+    id = Column(Integer, primary_key=True)
+    fornecedor = Column(String(255), index=True)
+    codigo_produto_fornecedor = Column(String(100), index=True)
+    descricao = Column(String(255), nullable=True)
+    preco_unitario = Column(Float, index=True)
+    quantidade = Column(Integer, nullable=True)
+    data = Column(DateTime, index=True)
+    nf_id = Column(Integer, ForeignKey("notas_fiscais.id"), nullable=True)
+    data_criacao = Column(DateTime, default=datetime.utcnow)
+
+
+class Recomendacao(Base):
+    """
+    Recomendações de recompra calculadas automaticamente.
+    Cache das recomendações para performance e histórico.
+    """
+    __tablename__ = "recomendacoes"
+
+    id = Column(Integer, primary_key=True)
+    olist_sku = Column(String(100), index=True)
+    codigo_produto_interno = Column(String(100), nullable=True)
+    nome_produto = Column(String(255))
+    estoque_atual = Column(Integer)
+    quantidade_recomendada = Column(Integer)
+    fornecedor_recomendado = Column(String(255))
+    preco_unitario = Column(Float)
+    custo_total = Column(Float)
+    frequencia_venda_diaria = Column(Float)
+    dias_ate_faltar = Column(Float)
+    urgencia = Column(String(20))  # "critico", "moderado", "ok"
+    motivo = Column(Text, nullable=True)
+    data_calculo = Column(DateTime, default=datetime.utcnow)
+    data_vencimento = Column(DateTime, nullable=True)
+    fornecedores_alternativos = Column(Text, nullable=True)  # JSON string
+    status_acao = Column(String(50), default="novo")  # "novo", "comprado", "descartado", "vencido"
+    data_atualizacao = Column(DateTime, default=datetime.utcnow)
+    criado_em = Column(DateTime, default=datetime.utcnow)

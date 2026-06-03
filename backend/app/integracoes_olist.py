@@ -280,6 +280,111 @@ class OlistIntegration:
 
         return resultado
 
+    def obter_detalhes_completo(self, produto_id: str) -> Optional[Dict]:
+        """Obtém os detalhes COMPLETOS de um produto incluindo composição de kit"""
+        token = self.get_access_token()
+        if not token:
+            token = self.token_v2
+            if not token:
+                return None
+
+        try:
+            url = f"{self.API_BASE}/produtos/{produto_id}"
+            headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+            req = urllib.request.Request(url, headers=headers, method="GET")
+
+            with urllib.request.urlopen(req, timeout=15) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except Exception as e:
+            print(f"[OLIST] Erro ao obter detalhes de {produto_id}: {e}")
+            return None
+
+    def detectar_e_buscar_kit(self, termo: str) -> Optional[Dict]:
+        """
+        Detecta se um produto é um KIT e retorna seus componentes
+        Retorna: {
+            "eh_kit": bool,
+            "produto_principal": {...},
+            "componentes": [
+                {"sku": "...", "descricao": "...", "id": "...", "preco": ..., "estoque": ...},
+                ...
+            ]
+        }
+        """
+        # Primeiro, busca o produto
+        produtos = self.buscar_produtos(termo)
+
+        if not produtos or len(produtos) == 0:
+            return {"eh_kit": False, "erro": "Produto não encontrado"}
+
+        # Pega o primeiro resultado
+        produto = produtos[0]
+        produto_id = produto.get("id")
+
+        if not produto_id:
+            return {"eh_kit": False, "erro": "Produto inválido"}
+
+        # Busca detalhes completos para ver se é kit
+        detalhes = self.obter_detalhes_completo(str(produto_id))
+
+        if not detalhes:
+            return {"eh_kit": False, "erro": "Não conseguiu buscar detalhes do produto"}
+
+        # Verifica se é kit (tipo = "K")
+        tipo = detalhes.get("tipo", "")
+
+        if tipo != "K":
+            # Não é kit
+            return {"eh_kit": False, "tipo": tipo, "produto": produto}
+
+        # É um kit! Busca componentes
+        kit_data = detalhes.get("kit", [])
+
+        if not kit_data:
+            return {"eh_kit": True, "produto_principal": produto, "componentes": [], "erro": "Kit sem componentes configurados"}
+
+        # Processa componentes
+        componentes = []
+        for comp in kit_data:
+            comp_produto = comp.get("produto", {})
+            sku_comp = comp_produto.get("sku", "")
+            id_comp = comp_produto.get("id", "")
+
+            # Busca estoque do componente
+            estoque_comp = self.obter_estoque(str(id_comp)) if id_comp else None
+
+            # Busca dados mais recentes do componente
+            comp_dados = self.buscar_produtos(sku_comp)
+            if comp_dados:
+                comp_produto_data = comp_dados[0]
+            else:
+                comp_produto_data = {
+                    "id": id_comp,
+                    "sku": sku_comp,
+                    "nome": comp_produto.get("descricao", ""),
+                    "preco": 0,
+                    "estoque_atual": estoque_comp.get("disponivel", 0) if estoque_comp else 0
+                }
+
+            componentes.append({
+                "sku": sku_comp,
+                "id": id_comp,
+                "descricao": comp_produto.get("descricao", ""),
+                "nome": comp_produto_data.get("nome", ""),
+                "preco": comp_produto_data.get("preco", 0),
+                "estoque_atual": comp_produto_data.get("estoque_atual", estoque_comp.get("disponivel", 0) if estoque_comp else 0),
+                "quantidade_no_kit": comp.get("quantidade", 1)
+            })
+
+        return {
+            "eh_kit": True,
+            "sku_principal": produto.get("sku", ""),
+            "nome_kit": detalhes.get("descricao", ""),
+            "preco_kit": detalhes.get("precos", {}).get("preco", 0),
+            "id_principal": produto_id,
+            "componentes": componentes
+        }
+
     def obter_estoque(self, produto_id: str) -> Optional[Dict]:
         """Obtem o estoque atual de um produto (saldo, reservado, disponivel)"""
         token = self.get_access_token()
@@ -396,6 +501,85 @@ class OlistIntegration:
         except Exception as e:
             print(f"[OLIST] Erro ao atualizar estoque: {e}")
             return False
+
+    def sincronizar_historico_vendas(self, db, dias: int = 30) -> int:
+        """
+        Sincroniza histórico de vendas/pedidos da Olist para HistoricoVendas.
+        Retorna número de vendas sincronizadas.
+        """
+        from app.models import HistoricoVendas
+        from datetime import datetime, timedelta
+
+        try:
+            token = self.get_access_token()
+            if not token:
+                print("[OLIST] Token não disponível para sincronizar histórico")
+                return 0
+
+            # Data limite: últimos N dias
+            data_limite = (datetime.utcnow() - timedelta(days=dias)).isoformat()
+
+            # GET /pedidos com filtro de data
+            url = f"{self.API_BASE}/pedidos?dataInicio={data_limite}"
+            headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+
+            req = urllib.request.Request(url, headers=headers, method="GET")
+            with urllib.request.urlopen(req, timeout=15) as response:
+                dados = json.loads(response.read().decode("utf-8"))
+                pedidos = dados.get("data", [])
+
+                vendas_count = 0
+
+                for pedido in pedidos:
+                    pedido_id = pedido.get("numero", "")
+                    data_venda_str = pedido.get("dataPedido", "")
+                    itens_pedido = pedido.get("itens", [])
+
+                    # Converter data
+                    try:
+                        data_venda = datetime.fromisoformat(data_venda_str.replace("Z", "+00:00"))
+                    except:
+                        data_venda = datetime.utcnow()
+
+                    # Para cada item do pedido
+                    for item in itens_pedido:
+                        sku = item.get("sku", "")
+                        produto_id = item.get("idProduto", "")
+                        quantidade = int(item.get("quantidade", 0))
+                        preco_unitario = float(item.get("precoUnitario", 0))
+                        receita = quantidade * preco_unitario
+
+                        # Verificar se já existe
+                        existente = db.query(HistoricoVendas).filter(
+                            HistoricoVendas.pedido_id == pedido_id,
+                            HistoricoVendas.olist_sku == sku
+                        ).first()
+
+                        if not existente:
+                            venda = HistoricoVendas(
+                                olist_sku=sku,
+                                olist_produto_id=produto_id,
+                                data_venda=data_venda,
+                                quantidade=quantidade,
+                                preco_unitario=preco_unitario,
+                                receita=receita,
+                                marketplace="olist",
+                                pedido_id=pedido_id
+                            )
+                            db.add(venda)
+                            vendas_count += 1
+
+                db.commit()
+                print(f"[OLIST] {vendas_count} vendas sincronizadas")
+                return vendas_count
+
+        except urllib.error.HTTPError as e:
+            error_body = e.read().decode("utf-8")
+            print(f"[OLIST] Erro HTTP {e.code} ao sincronizar vendas: {error_body[:300]}")
+            return 0
+        except Exception as e:
+            print(f"[OLIST] Erro ao sincronizar histórico de vendas: {e}")
+            return 0
 
     def status(self) -> Dict:
         """Retorna status da integracao"""

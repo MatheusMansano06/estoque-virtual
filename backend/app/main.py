@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from database import engine, Base, SessionLocal
 import os
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 import uuid
 import urllib.request
 import urllib.parse
@@ -15,7 +15,11 @@ from dotenv import load_dotenv
 from difflib import SequenceMatcher
 import io
 
-from app.models import NotaFiscal, ItemEstoque, ConfirmacaoEstoque, StatusEstoque, VinculoOlist, KitOlist
+from app.models import (
+    NotaFiscal, ItemEstoque, ConfirmacaoEstoque, StatusEstoque, VinculoOlist,
+    KitOlist, HistoricoVendas, FornecedorConfiguracao,
+    HistoricoPrecos, Recomendacao
+)
 from app.utils.nfe_parser import NFeParsing
 from app.utils.nfe_pdf_generator import NFePDFGenerator
 from app.integracoes_olist import olist
@@ -293,6 +297,11 @@ async def get_nfs(request: Request):
             "limit": limit,
             "items": items
         })
+    except Exception as e:
+        print(f"[ERROR get_nfs] {type(e).__name__}: {e}")
+        import traceback
+        traceback.print_exc()
+        return JSONResponse({"erro": str(e)}, status_code=500)
     finally:
         db.close()
 
@@ -692,6 +701,59 @@ async def listar_produtos_olist(request: Request):
             "total": 0,
             "erro": str(e)
         })
+
+
+async def detectar_kit_automatico(request: Request):
+    """
+    Detecta automaticamente se um SKU é um KIT na Olist
+    e retorna os componentes unitários para atualizar estoque
+    GET /api/olist/detectar-kit?sku=V+RL3
+    """
+    try:
+        sku = request.query_params.get("sku", "").strip()
+
+        if not sku:
+            return JSONResponse({
+                "eh_kit": False,
+                "erro": "SKU não informado"
+            }, status_code=400)
+
+        print(f"[KIT-AUTO] Detectando kit para SKU: {sku}")
+
+        # Tenta detectar kit
+        resultado = olist.detectar_e_buscar_kit(sku)
+
+        if resultado.get("eh_kit"):
+            # É um kit!
+            componentes = resultado.get("componentes", [])
+            print(f"[KIT-AUTO] KIT DETECTADO: {sku} com {len(componentes)} componente(s)")
+
+            return JSONResponse({
+                "eh_kit": True,
+                "sku_principal": resultado.get("sku_principal"),
+                "nome_kit": resultado.get("nome_kit"),
+                "preco_kit": resultado.get("preco_kit"),
+                "componentes": componentes,
+                "mensagem": f"✅ KIT detectado! {len(componentes)} componentes encontrados"
+            })
+        else:
+            # Não é kit, retorna o produto normal
+            produto = resultado.get("produto")
+            print(f"[KIT-AUTO] Não é kit. Tipo: {resultado.get('tipo')}")
+
+            return JSONResponse({
+                "eh_kit": False,
+                "tipo": resultado.get("tipo"),
+                "produto": produto,
+                "mensagem": "Este SKU não é um kit, use a busca normal"
+            })
+
+    except Exception as e:
+        print(f"[ERRO KIT-AUTO] {str(e)}")
+        return JSONResponse({
+            "eh_kit": False,
+            "erro": str(e)
+        }, status_code=500)
 
 
 # ===== NOVOS ENDPOINTS - INTEGRAÇÃO OLIST =====
@@ -1336,6 +1398,8 @@ async def vincular_kit_com_componentes(request: Request):
         item.olist_sku = sku_kit  # SKU do kit
         item.olist_nome = f"KIT: {sku_kit}"  # Marcar como kit
         item.vinculado_em = datetime.utcnow()
+        item.estoque_olist_atualizado_em = datetime.utcnow()  # Marcar como subido
+        print(f"[VINCULAR-KIT] Item {item_id}: vinculado_em={item.vinculado_em}, atualizado_em={item.estoque_olist_atualizado_em}")
 
         # Para cada componente, atualizar estoque na Olist
         resultados = []
@@ -1345,28 +1409,37 @@ async def vincular_kit_com_componentes(request: Request):
             olist_nome = comp.get("olist_nome", "")
             olist_preco = float(comp.get("olist_preco", 0) or 0)
             quantidade = float(item.quantidade_nf or 1)
+            estoque_atual = comp.get("estoque_atual", 0)
 
             try:
                 # Atualizar estoque do componente na Olist
                 resultado_estoque = olist.atualizar_estoque(
-                    sku=sku_comp,
+                    produto_id=str(olist_produto_id),
                     quantidade=int(quantidade)
                 )
 
+                novo_estoque = int(estoque_atual) + int(quantidade) if resultado_estoque else estoque_atual
+
                 resultados.append({
                     "sku": sku_comp,
-                    "sucesso": True,
-                    "quantidade_atualizada": int(quantidade)
+                    "nome": olist_nome,
+                    "sucesso": resultado_estoque,
+                    "estoque_anterior": int(estoque_atual),
+                    "quantidade_adicionada": int(quantidade) if resultado_estoque else 0,
+                    "novo_estoque": novo_estoque
                 })
 
             except Exception as e:
                 resultados.append({
                     "sku": sku_comp,
+                    "nome": olist_nome,
                     "sucesso": False,
-                    "erro": str(e)
+                    "erro": str(e),
+                    "estoque_anterior": int(estoque_atual)
                 })
 
         db.commit()
+        print(f"[VINCULAR-KIT] Dados salvos no banco! Item {item_id} agora tem estoque_olist_atualizado_em")
 
         return JSONResponse({
             "sucesso": True,
@@ -1380,6 +1453,232 @@ async def vincular_kit_com_componentes(request: Request):
         return JSONResponse({"erro": str(e)}, status_code=500)
     finally:
         db.close()
+
+# ============== ENDPOINTS DE RECOMENDACOES =============
+
+async def get_recomendacoes(request):
+    """
+    Retorna lista de recomendações de recompra.
+    Query params:
+    - filtro: critico|moderado|ok|todos (default: todos)
+    - limite: 20 (default)
+    - offset: 0 (default)
+    """
+    try:
+        from app.utils.recomendacao_engine import calcular_recomendacoes
+
+        filtro = request.query_params.get("filtro", "todos")
+        limite = int(request.query_params.get("limite", 20))
+        offset = int(request.query_params.get("offset", 0))
+
+        db = SessionLocal()
+        recomendacoes = calcular_recomendacoes(db)
+        db.close()
+
+        # Filtrar se necessário
+        if filtro != "todos":
+            recomendacoes = [r for r in recomendacoes if r.urgencia == filtro]
+
+        # Paginação
+        total = len(recomendacoes)
+        recomendacoes = recomendacoes[offset : offset + limite]
+
+        return JSONResponse({
+            "total": total,
+            "offset": offset,
+            "limite": limite,
+            "recomendacoes": [r.dict() for r in recomendacoes]
+        })
+
+    except Exception as e:
+        print(f"Erro ao buscar recomendações: {e}")
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+async def get_recomendacao_detalhada(request):
+    """
+    Retorna análise detalhada de uma recomendação.
+    """
+    try:
+        from app.utils.recomendacao_engine import (
+            obter_frequencia_venda, obter_fornecedores_produto,
+            calcular_lead_time, obter_historico_precos, calcular_tendencia_preco
+        )
+
+        sku = request.path_params.get("sku")
+        db = SessionLocal()
+
+        # Análise de demanda
+        demanda = obter_frequencia_venda(db, sku)
+
+        # Estoque atual
+        from sqlalchemy import func
+        estoque_query = db.query(
+            func.sum(ItemEstoque.quantidade_confirmada),
+            func.sum(ItemEstoque.quantidade_confirmada * ItemEstoque.preco_unitario),
+            func.sum(ItemEstoque.quantidade_confirmada * 2 * ItemEstoque.preco_unitario)  # Aproximação de preço venda
+        ).filter(ItemEstoque.olist_sku == sku).first()
+
+        estoque_atual = estoque_query[0] or 0
+        valor_total_custo = estoque_query[1] or 0
+        valor_total_venda = estoque_query[2] or 0
+
+        frequencia_diaria = demanda["media_diaria"]
+        cobertura_dias = estoque_atual / frequencia_diaria if frequencia_diaria > 0 else 999
+
+        estoque_info = {
+            "quantidade": int(estoque_atual),
+            "valor_total_custo": round(float(valor_total_custo), 2),
+            "valor_total_venda": round(float(valor_total_venda), 2),
+            "cobertura_dias": round(cobertura_dias, 1),
+            "status": "critico" if cobertura_dias < 3 else "ok" if cobertura_dias > 7 else "moderado"
+        }
+
+        # Fornecedores
+        fornecedores_data = obter_fornecedores_produto(db, sku)
+        fornecedores_list = []
+
+        for f in fornecedores_data:
+            lead_time_info = calcular_lead_time(db, f["nome"])
+            historico_precos = obter_historico_precos(db, f["nome"], f["codigo_produto"])
+            tendencia_preco = calcular_tendencia_preco(db, f["nome"], f["codigo_produto"])
+
+            fornecedores_list.append({
+                "nome": f["nome"],
+                "preco_unitario": f["preco_unitario"],
+                "lead_time_dias": lead_time_info["lead_time_dias"],
+                "frequencia_compra": f["frequencia_compra"],
+                "ultima_compra": None,  # Seria preciso rastrear data
+                "historico_precos": historico_precos,
+                "tendencia_preco": tendencia_preco,
+                "motivo_recomendacao": None
+            })
+
+        # Recomendação final
+        from app.utils.recomendacao_engine import (
+            selecionar_melhor_fornecedor, calcular_quantidade_compra
+        )
+
+        melhor_fornecedor, _ = selecionar_melhor_fornecedor(db, sku, fornecedores_data)
+        melhor_info = next((f for f in fornecedores_data if f["nome"] == melhor_fornecedor), None)
+
+        if melhor_info:
+            lead_time = melhor_info["lead_time_dias"]
+            quantidade_recomendada = calcular_quantidade_compra(frequencia_diaria, lead_time)
+            preco_unitario = melhor_info["preco_unitario"]
+            custo_total = quantidade_recomendada * preco_unitario
+            data_chegada = datetime.utcnow() + timedelta(days=lead_time)
+            data_falta = datetime.utcnow() + timedelta(days=cobertura_dias)
+
+            recomendacao_final = {
+                "comprar_quantidade": quantidade_recomendada,
+                "fornecedor": melhor_fornecedor,
+                "preco_unitario": round(preco_unitario, 2),
+                "custo_total": round(custo_total, 2),
+                "prazo_entrega_dias": lead_time,
+                "data_chegada_estimada": data_chegada.isoformat(),
+                "estoque_sera_zero_em": data_falta.isoformat(),
+                "cobertura_apos_compra": round(cobertura_dias + (quantidade_recomendada / frequencia_diaria), 1),
+                "margem_estimada_30_dias": round(quantidade_recomendada * preco_unitario * 0.5, 2),  # Aproximação
+                "roi_30_dias": round(1.5, 2)  # Aproximação
+            }
+        else:
+            recomendacao_final = {}
+
+        db.close()
+
+        return JSONResponse({
+            "sku": sku,
+            "nome": "Produto",
+            "analise_demanda": demanda,
+            "estoque_atual": estoque_info,
+            "fornecedores": fornecedores_list,
+            "recomendacao_final": recomendacao_final
+        })
+
+    except Exception as e:
+        print(f"Erro ao buscar recomendação detalhada: {e}")
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+async def gerar_recomendacoes(request):
+    """
+    Força recálculo de todas as recomendações.
+    Sincroniza com Olist e recalcula tudo.
+    """
+    try:
+        from app.utils.recomendacao_engine import calcular_recomendacoes, salvar_recomendacoes
+        from datetime import datetime
+
+        db = SessionLocal()
+
+        # Sincronizar histórico de vendas
+        try:
+            from app.integracoes_olist import olist
+            vendas_sincronizadas = olist.sincronizar_historico_vendas(db, dias=30)
+            print(f"Vendas sincronizadas: {vendas_sincronizadas}")
+        except Exception as e:
+            print(f"Aviso: não foi possível sincronizar vendas: {e}")
+
+        # Calcular recomendações
+        inicio = datetime.utcnow()
+        recomendacoes = calcular_recomendacoes(db)
+
+        # Salvar no BD
+        salvar_recomendacoes(db, recomendacoes)
+
+        tempo_calculo = (datetime.utcnow() - inicio).total_seconds()
+        db.close()
+
+        return JSONResponse({
+            "status": "sucesso",
+            "recomendacoes_geradas": len(recomendacoes),
+            "tempo_calculo_segundos": round(tempo_calculo, 2),
+            "timestamp": datetime.utcnow().isoformat()
+        })
+
+    except Exception as e:
+        print(f"Erro ao gerar recomendações: {e}")
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+async def confirmar_compra_recomendacao(request):
+    """
+    Usuário confirmou que quer comprar a recomendação.
+    Salva a ação e envia email ao fornecedor (future).
+    """
+    try:
+        sku = request.path_params.get("sku")
+        body = await request.json()
+
+        quantidade = body.get("quantidade", 0)
+        fornecedor = body.get("fornecedor", "")
+        observacoes = body.get("observacoes", "")
+
+        db = SessionLocal()
+
+        # Marcar recomendação como comprada
+        recomendacao = db.query(Recomendacao).filter(
+            Recomendacao.olist_sku == sku
+        ).first()
+
+        if recomendacao:
+            recomendacao.status_acao = "comprado"
+            db.commit()
+
+        db.close()
+
+        # TODO: Enviar email ao fornecedor com os detalhes da compra
+
+        return JSONResponse({
+            "status": "sucesso",
+            "id_pedido": None,  # Será preenchido quando email for enviado
+            "mensagem": f"Pedido de {quantidade} unidades registrado para {fornecedor}. Email será enviado em breve."
+        })
+
+    except Exception as e:
+        print(f"Erro ao confirmar compra: {e}")
+        return JSONResponse({"error": str(e)}, status_code=500)
 
 
 routes = [
@@ -1405,6 +1704,7 @@ routes = [
     Route("/api/olist/callback", olist_callback, methods=["GET"]),
     Route("/api/olist/status", olist_status, methods=["GET"]),
     Route("/api/olist/produtos", buscar_produtos_olist, methods=["GET"]),
+    Route("/api/olist/detectar-kit", detectar_kit_automatico, methods=["GET"]),
     Route("/api/olist/produtos-todos", listar_produtos_olist, methods=["GET"]),
     Route("/api/olist/vincular-produto", vincular_produto_olist, methods=["POST"]),
     Route("/api/olist/aceitar-sugestao", aceitar_sugestao_vinculo, methods=["POST"]),
@@ -1420,6 +1720,11 @@ routes = [
     Route("/api/olist/kits/atualizar", atualizar_kit, methods=["POST"]),
     Route("/api/olist/kits/deletar", deletar_kit, methods=["POST"]),
     Route("/api/olist/kits/vincular-com-componentes", vincular_kit_com_componentes, methods=["POST"]),
+    # Recomendações de Recompra
+    Route("/api/recomendacoes", get_recomendacoes, methods=["GET"]),
+    Route("/api/recomendacoes/{sku}", get_recomendacao_detalhada, methods=["GET"]),
+    Route("/api/recomendacoes/gerar", gerar_recomendacoes, methods=["POST"]),
+    Route("/api/recomendacoes/{sku}/confirmar-compra", confirmar_compra_recomendacao, methods=["POST"]),
 ]
 
 app = Starlette(routes=routes)
@@ -1427,7 +1732,23 @@ app = Starlette(routes=routes)
 # Add CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://localhost:5173"],
+    allow_origins=[
+        "http://localhost:3000",
+        "http://localhost:5173",
+        "http://localhost:5174",
+        "http://localhost:5175",
+        "http://localhost:5176",
+        "http://localhost:5177",
+        "http://localhost:5178",
+        "http://localhost:5179",
+        "http://localhost:5180",
+        "http://localhost:5181",
+        "http://localhost:5182",
+        "http://localhost:5183",
+        "http://localhost:5184",
+        "http://localhost:5185",
+        "http://localhost:5186",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
