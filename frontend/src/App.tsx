@@ -681,6 +681,12 @@ function App() {
         // Recarregar dados para a barra de progresso refletir a subida
         await loadNotas()
         await loadDivergencias()
+        // Atualizar a nota selecionada com os dados mais recentes
+        if (notaSelecionada) {
+          const resAtual = await fetch(`http://localhost:8000/api/notas-fiscais/${notaSelecionada.id}`)
+          const notaAtualizada = await resAtual.json()
+          setNotaSelecionada(notaAtualizada)
+        }
       } else {
         alert('⚠️ Produto vinculado, mas falha ao atualizar estoque: ' + (dataEst.error || 'desconhecido'))
       }
