@@ -2194,8 +2194,22 @@ function App() {
               </div>
             )}
 
+            {/* BUSCADOR DE KITS - SEMPRE VISÍVEL PRIMEIRO */}
+            {!kitDetectado && !produtoOlistSelecionado.sku && (
+              <BuscadorKit
+                itemId={(produtoSelecionado as any)?.id ?? (produtoSelecionado as any)?.id_item}
+                onKitDetectado={(kit, componentes) => {
+                  setKitDetectado(kit)
+                  setComponentesKit(componentes)
+                }}
+                onSemKit={() => {
+                  // Kit não encontrado, usuário pode buscar um SKU normal
+                }}
+              />
+            )}
+
             {/* SUGESTÃO AUTOMÁTICA (memória de vínculos) */}
-            {sugestaoVinculo && !sugestaoDispensada && !produtoOlistSelecionado.sku && (
+            {sugestaoVinculo && !sugestaoDispensada && !produtoOlistSelecionado.sku && !kitDetectado && (
               <div style={{
                 background: '#fff8e1',
                 border: '2px solid #ffb300',
@@ -2234,20 +2248,6 @@ function App() {
                   </button>
                 </div>
               </div>
-            )}
-
-            {/* BUSCADOR DE KITS */}
-            {!kitDetectado && !produtoOlistSelecionado.sku && (
-              <BuscadorKit
-                itemId={(produtoSelecionado as any)?.id ?? (produtoSelecionado as any)?.id_item}
-                onKitDetectado={(kit, componentes) => {
-                  setKitDetectado(kit)
-                  setComponentesKit(componentes)
-                }}
-                onSemKit={() => {
-                  // Kit não encontrado, usuário pode buscar um SKU normal
-                }}
-              />
             )}
 
             {/* KIT DETECTADO - Opções de ação */}

@@ -91,8 +91,14 @@ export default function BuscadorKit({ itemId, onKitDetectado, onSemKit }: Buscad
   }
 
   return (
-    <div style={{ padding: '1rem', background: '#f9f9f9', borderRadius: '8px', marginBottom: '1rem' }}>
-      <h3 style={{ margin: '0 0 1rem', color: '#1a1a1a' }}>Buscar Kit</h3>
+    <div style={{ padding: '1.5rem', background: '#fff3cd', border: '3px solid #ffc107', borderRadius: '8px', marginBottom: '2rem' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '1rem' }}>
+        <span style={{ fontSize: '1.5rem' }}>🎁</span>
+        <h3 style={{ margin: 0, color: '#856404', fontSize: '1.1rem', fontWeight: '700' }}>Buscar Kit (Produto Composto)</h3>
+      </div>
+      <p style={{ margin: '0 0 1rem', color: '#856404', fontSize: '0.9rem' }}>
+        Se este produto é um KIT (como Viseira + Reparo), busque pelo SKU do kit aqui primeiro!
+      </p>
 
       <form onSubmit={handleBuscar} style={{ display: 'flex', gap: '0.5rem', marginBottom: '1rem' }}>
         <input
