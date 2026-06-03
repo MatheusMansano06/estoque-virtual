@@ -868,21 +868,6 @@ function App() {
               >
                 🏢 Fornecedores
               </button>
-              <button
-                onClick={() => setPagina('notificacoes')}
-                style={{
-                  padding: '0.6rem 1.2rem',
-                  backgroundColor: '#757575',
-                  color: 'white',
-                  border: 'none',
-                  borderRadius: '4px',
-                  cursor: 'pointer',
-                  fontWeight: 'bold',
-                  fontSize: '0.9rem'
-                }}
-              >
-                📲 Notificações
-              </button>
             </div>
           </div>
         </header>
@@ -2767,42 +2752,6 @@ function App() {
         </header>
         <main className="container main-content">
           <FornecedoresManager />
-        </main>
-      </div>
-    )
-  }
-
-  // ===== PÁGINA NOTIFICAÇÕES =====
-  if (pagina === 'notificacoes') {
-    return (
-      <div className="app">
-        <header className="header">
-          <div className="container">
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <div>
-                <h1>NOTIFICAÇÕES DE FORNECEDORES</h1>
-                <p>Histórico e teste de notificações automáticas via WhatsApp</p>
-              </div>
-              <button
-                onClick={() => setPagina('inicial')}
-                style={{
-                  padding: '0.6rem 1.2rem',
-                  backgroundColor: '#f0f0f0',
-                  color: '#1a1a1a',
-                  border: '1px solid #ddd',
-                  borderRadius: '4px',
-                  cursor: 'pointer',
-                  fontWeight: 'bold',
-                  fontSize: '0.9rem'
-                }}
-              >
-                ← Voltar
-              </button>
-            </div>
-          </div>
-        </header>
-        <main className="container main-content">
-          <NotificacoesFornecedores />
         </main>
       </div>
     )
