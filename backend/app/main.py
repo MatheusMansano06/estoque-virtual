@@ -674,6 +674,26 @@ async def buscar_produtos_olist(request: Request):
         })
 
 
+async def listar_produtos_olist(request: Request):
+    """Lista todos os produtos na Olist"""
+    try:
+        print("[LISTA] Listando todos os produtos da Olist")
+        produtos = olist.listar_todos_produtos(limite=100)
+
+        return JSONResponse({
+            "produtos": produtos,
+            "total": len(produtos),
+            "metodo": "list_all"
+        })
+    except Exception as e:
+        print(f"[ERRO] Listagem: {str(e)}")
+        return JSONResponse({
+            "produtos": [],
+            "total": 0,
+            "erro": str(e)
+        })
+
+
 # ===== NOVOS ENDPOINTS - INTEGRAÇÃO OLIST =====
 
 async def olist_status(request: Request):
@@ -1148,6 +1168,7 @@ routes = [
     Route("/api/olist/callback", olist_callback, methods=["GET"]),
     Route("/api/olist/status", olist_status, methods=["GET"]),
     Route("/api/olist/produtos", buscar_produtos_olist, methods=["GET"]),
+    Route("/api/olist/produtos-todos", listar_produtos_olist, methods=["GET"]),
     Route("/api/olist/vincular-produto", vincular_produto_olist, methods=["POST"]),
     Route("/api/olist/aceitar-sugestao", aceitar_sugestao_vinculo, methods=["POST"]),
     Route("/api/olist/atualizar-estoque", atualizar_estoque_olist, methods=["POST"]),
