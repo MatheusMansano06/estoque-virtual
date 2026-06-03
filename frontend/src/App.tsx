@@ -1,8 +1,8 @@
 import { useState, useEffect, useRef } from 'react'
 import './App.css'
-import { ModalDetalhes } from './ModalDetalhes.jsx'
-import { ModalDetalhesNota } from './ModalDetalhesNota.jsx'
-import { ModalDetalhesNotaFiscal } from './ModalDetalhesNotaFiscal.jsx'
+import { ModalDetalhes } from './ModalDetalhes'
+import { ModalDetalhesNota } from './ModalDetalhesNota'
+import { ModalDetalhesNotaFiscal } from './ModalDetalhesNotaFiscal'
 import { FornecedoresManager } from './components/FornecedoresManager'
 import { baixarMultiplosOuPdfs } from './services/api'
 
@@ -837,6 +837,53 @@ function App() {
           <div className="container">
             <h1>ESTOQUE VIRTUAL</h1>
             <p>Sistema de Inventário via Nota Fiscal Eletrônica</p>
+            <div style={{ marginTop: '1rem', display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
+              <button
+                onClick={() => setPagina('inicial')}
+                style={{
+                  padding: '0.6rem 1.2rem',
+                  backgroundColor: '#1976d2',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: '4px',
+                  cursor: 'pointer',
+                  fontWeight: 'bold',
+                  fontSize: '0.9rem'
+                }}
+              >
+                📦 Notas Fiscais
+              </button>
+              <button
+                onClick={() => setPagina('fornecedores')}
+                style={{
+                  padding: '0.6rem 1.2rem',
+                  backgroundColor: '#757575',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: '4px',
+                  cursor: 'pointer',
+                  fontWeight: 'bold',
+                  fontSize: '0.9rem'
+                }}
+              >
+                🏢 Fornecedores
+              </button>
+              <button
+                onClick={() => setPagina('notificacoes')}
+                style={{
+                  padding: '0.6rem 1.2rem',
+                  backgroundColor: '#757575',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: '4px',
+                  cursor: 'pointer',
+                  fontWeight: 'bold',
+                  fontSize: '0.9rem'
+                }}
+              >
+                📲 Notificações
+              </button>
+            </div>
           </div>
         </header>
 
@@ -2684,6 +2731,78 @@ function App() {
               </button>
             </div>
           </div>
+        </main>
+      </div>
+    )
+  }
+
+  // ===== PÁGINA FORNECEDORES =====
+  if (pagina === 'fornecedores') {
+    return (
+      <div className="app">
+        <header className="header">
+          <div className="container">
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div>
+                <h1>GESTÃO DE FORNECEDORES</h1>
+                <p>Cadastre e gerencie fornecedores para notificações automáticas</p>
+              </div>
+              <button
+                onClick={() => setPagina('inicial')}
+                style={{
+                  padding: '0.6rem 1.2rem',
+                  backgroundColor: '#f0f0f0',
+                  color: '#1a1a1a',
+                  border: '1px solid #ddd',
+                  borderRadius: '4px',
+                  cursor: 'pointer',
+                  fontWeight: 'bold',
+                  fontSize: '0.9rem'
+                }}
+              >
+                ← Voltar
+              </button>
+            </div>
+          </div>
+        </header>
+        <main className="container main-content">
+          <FornecedoresManager />
+        </main>
+      </div>
+    )
+  }
+
+  // ===== PÁGINA NOTIFICAÇÕES =====
+  if (pagina === 'notificacoes') {
+    return (
+      <div className="app">
+        <header className="header">
+          <div className="container">
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div>
+                <h1>NOTIFICAÇÕES DE FORNECEDORES</h1>
+                <p>Histórico e teste de notificações automáticas via WhatsApp</p>
+              </div>
+              <button
+                onClick={() => setPagina('inicial')}
+                style={{
+                  padding: '0.6rem 1.2rem',
+                  backgroundColor: '#f0f0f0',
+                  color: '#1a1a1a',
+                  border: '1px solid #ddd',
+                  borderRadius: '4px',
+                  cursor: 'pointer',
+                  fontWeight: 'bold',
+                  fontSize: '0.9rem'
+                }}
+              >
+                ← Voltar
+              </button>
+            </div>
+          </div>
+        </header>
+        <main className="container main-content">
+          <NotificacoesFornecedores />
         </main>
       </div>
     )
