@@ -3,12 +3,15 @@ import './App.css'
 import { ModalDetalhes } from './ModalDetalhes'
 import { ModalDetalhesNota } from './ModalDetalhesNota'
 import { ModalDetalhesNotaFiscal } from './ModalDetalhesNotaFiscal'
+import { baixarMultiplosOuPdfs } from './services/api'
 
 interface NotaFiscal {
   id: number
   numero_nf: string
   serie: string
   fornecedor: string
+  cnpj?: string | null
+  endereco?: string | null
   status: string
   data_emissao?: string
   data_upload?: string
@@ -101,6 +104,14 @@ function App() {
   const [sugestaoDispensada, setSugestaoDispensada] = useState(false)
   const [modalVinculosAberto, setModalVinculosAberto] = useState(false)
   const [listaVinculos, setListaVinculos] = useState<any[]>([])
+  // Tela única: filtro + modal de detalhe com abas
+  const [filtroBusca, setFiltroBusca] = useState('')
+  const [filtroData, setFiltroData] = useState('')
+  const [notaDetalheAberta, setNotaDetalheAberta] = useState<NotaFiscal | null>(null)
+  const [abaDetalhe, setAbaDetalhe] = useState<'detalhes' | 'conferencia' | 'divergencias'>('detalhes')
+  const [notasSelecionadas, setNotasSelecionadas] = useState<Set<number>>(new Set())
+  const [deletando, setDeletando] = useState(false)
+  const [downloadandoPdf, setDownloadandoPdf] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   // Carregar notas ao iniciar
@@ -182,11 +193,60 @@ function App() {
     }
   }
 
+  const toggleSelecaoNota = (notaId: number) => {
+    const novo = new Set(notasSelecionadas)
+    if (novo.has(notaId)) {
+      novo.delete(notaId)
+    } else {
+      novo.add(notaId)
+    }
+    setNotasSelecionadas(novo)
+  }
+
+  const selecionarTodasNotas = () => {
+    if (notasSelecionadas.size === notasFiltradas.length) {
+      setNotasSelecionadas(new Set())
+    } else {
+      setNotasSelecionadas(new Set(notasFiltradas.map(n => n.id)))
+    }
+  }
+
+  const excluirNotasSelecionadas = async () => {
+    if (!window.confirm(`Tem certeza que deseja excluir ${notasSelecionadas.size} nota(s)? Esta ação não pode ser desfeita.`)) {
+      return
+    }
+
+    setDeletando(true)
+    try {
+      await fetch('http://localhost:8000/api/notas-fiscais/deletar-multiplas', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ nf_ids: Array.from(notasSelecionadas) }),
+      })
+      await loadNotas()
+      setNotasSelecionadas(new Set())
+    } catch (err) {
+      alert('Erro ao excluir notas')
+    } finally {
+      setDeletando(false)
+    }
+  }
+
+  const baixarNotasSelecionadas = async (formato: 'original' | 'pdf' = 'pdf') => {
+    try {
+      setDownloadandoPdf(true)
+      await baixarMultiplosOuPdfs(Array.from(notasSelecionadas), formato)
+    } finally {
+      setDownloadandoPdf(false)
+    }
+  }
+
   const loadNotas = async () => {
     try {
       const res = await fetch('http://localhost:8000/api/notas-fiscais')
       const data = await res.json()
       setNotas(data.items || [])
+      setNotasSelecionadas(new Set())
     } catch (err) {
       console.error('Erro ao carregar notas:', err)
     }
@@ -232,6 +292,7 @@ function App() {
     setProdutoOlistSKU('')
     setSugestoesSKU([])
     setModalOpen(false)
+    setNotaDetalheAberta(null)
     setPagina('relacionamento_produto')
     loadNotas()
     loadDivergencias()
@@ -246,6 +307,99 @@ function App() {
       (i) => !!i.estoque_olist_atualizado_em
     ).length
     return { conferidos, total, percentual: Math.round((conferidos / total) * 100) }
+  }
+
+  // Status automático da nota (pelo % subido na Olist)
+  const statusNota = (nota: NotaFiscal) => {
+    const { percentual } = calcularProgresso(nota.itens)
+    if (percentual >= 100) return { label: 'CONCLUÍDA', cor: '#2e7d32', bg: '#e8f5e9', icone: '✅' }
+    if (percentual > 0) return { label: 'EM ANDAMENTO', cor: '#1565c0', bg: '#e3f2fd', icone: '🔄' }
+    return { label: 'A CONFERIR', cor: '#e65100', bg: '#fff3e0', icone: '🆕' }
+  }
+
+  // Abre o modal de detalhe da nota (busca dados frescos)
+  const abrirDetalheNota = async (notaId: number) => {
+    try {
+      const res = await fetch(`http://localhost:8000/api/notas-fiscais/${notaId}`)
+      const data: NotaFiscal = await res.json()
+      setNotaDetalheAberta(data)
+      setNotaSelecionada(data)
+      setProdutosNota(data.itens || [])
+      setAbaDetalhe('detalhes')
+    } catch (err) {
+      console.error('Erro ao abrir nota:', err)
+    }
+  }
+
+  // Notas filtradas pela busca (nº, nome, CNPJ) e data
+  const notasFiltradas = notas.filter((nota) => {
+    const termo = filtroBusca.trim().toLowerCase()
+    const casaTermo = !termo ||
+      (nota.numero_nf || '').toLowerCase().includes(termo) ||
+      (nota.fornecedor || '').toLowerCase().includes(termo) ||
+      (nota.cnpj || '').toLowerCase().includes(termo)
+    const casaData = !filtroData ||
+      (nota.data_emissao || '').slice(0, 10) === filtroData
+    return casaTermo && casaData
+  })
+
+  // Divergências apenas da nota aberta no detalhe
+  const divergenciasDaNota = (nota: NotaFiscal | null) =>
+    !nota ? [] : divergencias.filter((d) => String(d.numero_nf) === String(nota.numero_nf))
+
+  const resolverDivergenciaItem = async (itemId: number) => {
+    const res = await fetch('http://localhost:8000/api/resolver-divergencia', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ item_id: itemId })
+    })
+    if (res.ok) { alert('✅ Divergência marcada como resolvida'); await loadDivergencias(); await loadNotas() }
+    else alert('❌ Erro ao resolver')
+  }
+
+  const deletarDivergenciaItem = async (itemId: number) => {
+    if (!window.confirm('Tem certeza que deseja deletar esta divergência?')) return
+    const res = await fetch('http://localhost:8000/api/deletar-divergencia', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ item_id: itemId })
+    })
+    if (res.ok) { alert('✅ Divergência deletada'); await loadDivergencias(); await loadNotas() }
+    else alert('❌ Erro ao deletar')
+  }
+
+  // Da divergência -> tela de vincular Olist (sobe a quantidade recebida)
+  const vincularDivergenciaOlist = (div: Divergencia) => {
+    setProdutoSelecionado({
+      id: div.item_id,
+      descricao: div.produto,
+      codigo_produto: div.codigo,
+      quantidade_nf: div.quantidade_confirmada,
+      preco_unitario: 0,
+    } as any)
+    setProdutoOlistSelecionado({ id: '', sku: '', nome: '', preco: 0, estoque: 0, estoque_saldo: 0, estoque_reservado: 0 })
+    setProdutoOlistSKU('')
+    setSugestoesSKU([])
+    setNotaDetalheAberta(null)
+    setPagina('relacionamento_produto')
+  }
+
+  // Abre conferência de um produto (a partir da aba Conferência)
+  const conferirProduto = (item: ItemNota) => {
+    if (!notaDetalheAberta) return
+    const produtoEstoque: any = {
+      id_item: item.id,
+      descricao: item.descricao,
+      codigo_produto: item.codigo_produto,
+      quantidade_total: item.quantidade_nf,
+      quantidade_nf: item.quantidade_nf,
+      quantidade_confirmada: item.quantidade_confirmada ?? item.quantidade_nf,
+      preco_unitario: item.preco_unitario,
+      notas_fiscais: [{
+        numero_nf: notaDetalheAberta.numero_nf || '', serie: notaDetalheAberta.serie || '',
+        fornecedor: notaDetalheAberta.fornecedor || '', quantidade: item.quantidade_nf
+      }]
+    }
+    setProdutoSelecionado(produtoEstoque)
+    setModalOpen(true)
   }
 
   // Componente de barra de progresso reutilizável
@@ -443,12 +597,15 @@ function App() {
         alert('✅ Produto adicionado ao estoque!')
         setModalAdicionarProdutoAberto(false)
         setNovoProduto({ codigo: '', descricao: '', quantidade: 1, preco: 0 })
-        // Recarregar notas para atualizar a lista
-        if (notaSelecionada) {
-          const resNota = await fetch(`http://localhost:8000/api/notas-fiscais/${notaSelecionada.id}`)
+        // Recarregar a nota para atualizar a lista/abas
+        const nfId = notaDetalheAberta?.id ?? notaSelecionada?.id
+        if (nfId) {
+          const resNota = await fetch(`http://localhost:8000/api/notas-fiscais/${nfId}`)
           const dataNota = await resNota.json()
           setProdutosNota(dataNota.itens || [])
+          setNotaDetalheAberta(dataNota)
         }
+        loadNotas()
       } else {
         alert('❌ Erro ao adicionar produto')
       }
@@ -574,7 +731,155 @@ function App() {
             </div>
           )}
 
-          <div className="dashboard-grid">
+          {/* ===== TELA ÚNICA: 2 colunas — Upload (esq.) | Notas (dir.) ===== */}
+          <div style={{ display: 'grid', gridTemplateColumns: 'minmax(300px, 360px) 1fr', gap: '1.5rem', alignItems: 'start' }}>
+
+            {/* UPLOAD compacto */}
+            <div className="card">
+              <h2>Upload de Nota Fiscal</h2>
+              <div className="card-body">
+                <form onSubmit={handleUpload} style={{ display: 'flex', gap: '1rem', alignItems: 'center', flexWrap: 'wrap' }}>
+                  <div
+                    onClick={() => fileInputRef.current?.click()}
+                    style={{ flex: 1, minWidth: '260px', border: '2px dashed #cfd8dc', borderRadius: '8px', padding: '1rem 1.25rem', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '0.75rem' }}
+                  >
+                    <span style={{ fontSize: '1.5rem' }}>⬆️</span>
+                    <div>
+                      <div style={{ fontWeight: 600, color: '#1a1a1a' }}>{file ? file.name : 'Selecione um arquivo XML ou PDF'}</div>
+                      <div style={{ fontSize: '0.8rem', color: '#90a4ae' }}>Clique para escolher</div>
+                    </div>
+                  </div>
+                  <input ref={fileInputRef} type="file" accept=".xml,.pdf" onChange={(e) => setFile(e.target.files?.[0] || null)} disabled={loading} style={{ display: 'none' }} />
+                  <button type="submit" disabled={!file || loading} className="upload-button" style={{ whiteSpace: 'nowrap' }}>
+                    {loading ? 'Processando...' : 'Enviar NF-e'}
+                  </button>
+                </form>
+              </div>
+            </div>
+
+            {/* FILTRO + LISTA DE NOTAS */}
+            <div className="card">
+              <h2 style={{ marginTop: 0 }}>Notas Fiscais ({notasFiltradas.length})</h2>
+              <div className="card-body">
+                <div style={{ display: 'flex', gap: '0.75rem', marginBottom: '1.25rem', flexWrap: 'wrap' }}>
+                  <input
+                    type="text"
+                    value={filtroBusca}
+                    onChange={(e) => setFiltroBusca(e.target.value)}
+                    placeholder="Buscar por nº da nota, fornecedor ou CNPJ..."
+                    style={{ flex: 1, minWidth: '240px', padding: '0.7rem 0.9rem', border: '1px solid #cfd8dc', borderRadius: '6px', fontSize: '0.9rem' }}
+                  />
+                  <input
+                    type="date"
+                    value={filtroData}
+                    onChange={(e) => setFiltroData(e.target.value)}
+                    title="Filtrar por data de emissão"
+                    style={{ padding: '0.7rem 0.9rem', border: '1px solid #cfd8dc', borderRadius: '6px', fontSize: '0.9rem' }}
+                  />
+                  {(filtroBusca || filtroData) && (
+                    <button onClick={() => { setFiltroBusca(''); setFiltroData('') }} style={{ padding: '0.7rem 1rem', background: '#f0f0f0', border: '1px solid #ddd', borderRadius: '6px', cursor: 'pointer', fontWeight: 600 }}>Limpar</button>
+                  )}
+                </div>
+
+                {notasSelecionadas.size > 0 && (
+                  <div style={{ background: 'linear-gradient(90deg, #2196F3 0%, #1976D2 100%)', color: 'white', padding: '1rem 1.5rem', borderRadius: '4px', marginBottom: '1rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center', boxShadow: '0 2px 8px rgba(0, 0, 0, 0.15)' }}>
+                    <span style={{ fontWeight: 600 }}>
+                      {notasSelecionadas.size} selecionada{notasSelecionadas.size !== 1 ? 's' : ''}
+                    </span>
+                    <div style={{ display: 'flex', gap: '0.75rem' }}>
+                      <button
+                        onClick={() => baixarNotasSelecionadas('pdf')}
+                        disabled={deletando || downloadandoPdf}
+                        style={{ padding: '0.6rem 1.2rem', background: '#FF9800', color: 'white', border: 'none', borderRadius: '3px', fontWeight: 600, cursor: 'pointer', fontSize: '0.9rem', opacity: downloadandoPdf ? 0.6 : 1 }}
+                      >
+                        {downloadandoPdf ? '...' : '📄 PDF'}
+                      </button>
+                      <button
+                        onClick={() => baixarNotasSelecionadas('original')}
+                        disabled={deletando || downloadandoPdf}
+                        style={{ padding: '0.6rem 1.2rem', background: '#4CAF50', color: 'white', border: 'none', borderRadius: '3px', fontWeight: 600, cursor: 'pointer', fontSize: '0.9rem' }}
+                      >
+                        📥 Original
+                      </button>
+                      <button
+                        onClick={excluirNotasSelecionadas}
+                        disabled={deletando || downloadandoPdf}
+                        style={{ padding: '0.6rem 1.2rem', background: '#f44336', color: 'white', border: 'none', borderRadius: '3px', fontWeight: 600, cursor: 'pointer', fontSize: '0.9rem', opacity: deletando ? 0.6 : 1 }}
+                      >
+                        {deletando ? '...' : '🗑 Excluir'}
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {notasFiltradas.length === 0 ? (
+                  <p style={{ color: '#999', textAlign: 'center', padding: '2rem' }}>
+                    {notas.length === 0 ? 'Nenhuma nota processada ainda. Faça o upload de uma NF-e acima.' : 'Nenhuma nota encontrada com esse filtro.'}
+                  </p>
+                ) : (
+                  <div style={{ border: '1px solid #e0e0e0', borderRadius: '8px', overflow: 'hidden' }}>
+                    {/* Cabeçalho da lista */}
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', padding: '0.6rem 1.1rem', background: '#f7f9fa', borderBottom: '1px solid #e0e0e0', fontSize: '0.72rem', fontWeight: 700, color: '#90a4ae', textTransform: 'uppercase' }}>
+                      <div style={{ width: '30px' }}>
+                        <input
+                          type="checkbox"
+                          checked={notasSelecionadas.size === notasFiltradas.length && notasFiltradas.length > 0}
+                          onChange={selecionarTodasNotas}
+                          title="Selecionar/Desselecionar todas"
+                          style={{ cursor: 'pointer', width: '18px', height: '18px' }}
+                        />
+                      </div>
+                      <div style={{ width: 130 }}>Status</div>
+                      <div style={{ flex: 1 }}>Nota / Fornecedor</div>
+                      <div style={{ width: 150, textAlign: 'right' }}>Emissão</div>
+                      <div style={{ width: 200 }}>Progresso (Olist)</div>
+                    </div>
+                    {notasFiltradas.map((nota, idx) => {
+                      const st = statusNota(nota)
+                      const isSelected = notasSelecionadas.has(nota.id)
+                      return (
+                        <div
+                          key={nota.id}
+                          onClick={() => !isSelected && abrirDetalheNota(nota.id)}
+                          style={{ display: 'flex', alignItems: 'center', gap: '1rem', padding: '0.85rem 1.1rem', cursor: 'pointer', background: isSelected ? '#e3f2fd' : '#fff', borderTop: idx > 0 ? '1px solid #eef2f4' : 'none', transition: 'background .15s', borderLeft: isSelected ? '4px solid #2196F3' : 'none' }}
+                          onMouseEnter={(e) => { if (!isSelected) e.currentTarget.style.background = '#f5f9ff' }}
+                          onMouseLeave={(e) => { if (!isSelected) e.currentTarget.style.background = '#fff' }}
+                        >
+                          <div style={{ width: '30px', display: 'flex', justifyContent: 'center' }}>
+                            <input
+                              type="checkbox"
+                              checked={isSelected}
+                              onChange={() => toggleSelecaoNota(nota.id)}
+                              onClick={(e) => e.stopPropagation()}
+                              style={{ cursor: 'pointer', width: '18px', height: '18px' }}
+                            />
+                          </div>
+                          <div style={{ width: 130 }}>
+                            <span style={{ background: st.bg, color: st.cor, fontWeight: 700, fontSize: '0.68rem', padding: '0.25rem 0.55rem', borderRadius: '999px', whiteSpace: 'nowrap' }}>{st.icone} {st.label}</span>
+                          </div>
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <div style={{ fontWeight: 700, color: '#1a1a1a', fontSize: '0.92rem' }}>NF #{nota.numero_nf}</div>
+                            <div style={{ color: '#607d8b', fontSize: '0.82rem', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                              {nota.fornecedor}{nota.cnpj ? ` · CNPJ ${nota.cnpj}` : ''} · {nota.itens?.length || 0} itens
+                            </div>
+                          </div>
+                          <div style={{ width: 150, textAlign: 'right', color: '#90a4ae', fontSize: '0.82rem', whiteSpace: 'nowrap' }}>
+                            {nota.data_emissao ? new Date(nota.data_emissao).toLocaleDateString('pt-BR') : 's/ data'}
+                          </div>
+                          <div style={{ width: 200 }}>
+                            <BarraProgresso itens={nota.itens} compacto />
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* ===== layout antigo (4 colunas) desativado ===== */}
+          <div style={{ display: 'none' }}>
             {/* UPLOAD CARD */}
             <div className="card">
               <h2>Upload de Nota Fiscal</h2>
@@ -1093,6 +1398,206 @@ function App() {
             onClose={() => setModalDetalhesNFAberto(false)}
             nota={notaSelecionada}
           />
+        )}
+
+        {/* ===== MODAL DETALHE DA NOTA COM ABAS ===== */}
+        {notaDetalheAberta && (() => {
+          const nota = notaDetalheAberta
+          const st = statusNota(nota)
+          const divs = divergenciasDaNota(nota)
+          const totalValor = (nota.itens || []).reduce((s, i) => s + i.quantidade_nf * i.preco_unitario, 0)
+          const TabBtn = ({ id, label, badge }: { id: 'detalhes' | 'conferencia' | 'divergencias', label: string, badge?: number }) => (
+            <button onClick={() => setAbaDetalhe(id)} style={{
+              padding: '0.8rem 1.4rem', border: 'none', cursor: 'pointer', fontWeight: 700, fontSize: '0.9rem',
+              background: abaDetalhe === id ? '#fff' : 'transparent',
+              color: abaDetalhe === id ? '#007acc' : '#607d8b',
+              borderBottom: abaDetalhe === id ? '3px solid #007acc' : '3px solid transparent'
+            }}>
+              {label}{badge ? <span style={{ marginLeft: 6, background: '#f44336', color: '#fff', borderRadius: 999, padding: '0 7px', fontSize: '0.7rem' }}>{badge}</span> : null}
+            </button>
+          )
+          return (
+            <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000, padding: 20 }} onClick={() => setNotaDetalheAberta(null)}>
+              <div style={{ background: '#fff', borderRadius: 8, width: '95vw', maxWidth: 1200, height: '90vh', display: 'flex', flexDirection: 'column', overflow: 'hidden' }} onClick={(e) => e.stopPropagation()}>
+                {/* HEADER */}
+                <div style={{ borderBottom: '1px solid #e0e0e0', padding: '1.25rem 2rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <div>
+                    <h2 style={{ margin: 0, fontSize: '1.4rem' }}>NOTA FISCAL ELETRÔNICA</h2>
+                    <p style={{ margin: '0.3rem 0 0', color: '#666', fontSize: '0.9rem' }}>NF #{nota.numero_nf} · Série {nota.serie}</p>
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+                    <span style={{ background: st.bg, color: st.cor, fontWeight: 700, fontSize: '0.8rem', padding: '0.35rem 0.8rem', borderRadius: 999 }}>{st.icone} {st.label}</span>
+                    <button onClick={() => setNotaDetalheAberta(null)} style={{ background: 'none', border: 'none', fontSize: '2rem', color: '#999', cursor: 'pointer', lineHeight: 1 }}>×</button>
+                  </div>
+                </div>
+
+                {/* ABAS */}
+                <div style={{ display: 'flex', borderBottom: '1px solid #e0e0e0', background: '#f7f9fa', paddingLeft: '1rem' }}>
+                  <TabBtn id="detalhes" label="📄 Detalhes" />
+                  <TabBtn id="conferencia" label="✅ Conferência" />
+                  <TabBtn id="divergencias" label="⚠️ Divergências" badge={divs.length} />
+                </div>
+
+                {/* CONTEÚDO */}
+                <div style={{ flex: 1, overflowY: 'auto', padding: '1.5rem 2rem' }}>
+
+                  {/* ABA DETALHES */}
+                  {abaDetalhe === 'detalhes' && (
+                    <div>
+                      <div style={{ background: '#f9f9f9', border: '2px solid #007acc', padding: '1.5rem', borderRadius: 8, marginBottom: '1.5rem', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1.5rem' }}>
+                        <div>
+                          <p style={{ color: '#007acc', fontSize: '0.75rem', fontWeight: 700, textTransform: 'uppercase', margin: 0 }}>Fornecedor</p>
+                          <h3 style={{ margin: '0.25rem 0 0.75rem', color: '#1a1a1a' }}>{nota.fornecedor}</h3>
+                          <p style={{ color: '#999', fontSize: '0.75rem', fontWeight: 700, margin: 0 }}>CNPJ</p>
+                          <p style={{ color: '#1a1a1a', margin: '0 0 0.5rem' }}>{nota.cnpj || 'N/A'}</p>
+                          <p style={{ color: '#999', fontSize: '0.75rem', fontWeight: 700, margin: 0 }}>ENDEREÇO</p>
+                          <p style={{ color: '#1a1a1a', margin: 0 }}>{nota.endereco || 'N/A'}</p>
+                        </div>
+                        <div>
+                          <p style={{ color: '#999', fontSize: '0.75rem', fontWeight: 700, margin: 0 }}>DATA DE EMISSÃO</p>
+                          <p style={{ color: '#1a1a1a', fontWeight: 600, margin: '0.25rem 0 0.75rem' }}>{nota.data_emissao ? new Date(nota.data_emissao).toLocaleDateString('pt-BR', { day: 'numeric', month: 'long', year: 'numeric' }) : 'N/A'}</p>
+                          <p style={{ color: '#999', fontSize: '0.75rem', fontWeight: 700, margin: 0 }}>QUANTIDADE DE ITENS</p>
+                          <p style={{ color: '#1a1a1a', fontWeight: 700, fontSize: '1.2rem', margin: '0.25rem 0' }}>{nota.itens?.length || 0}</p>
+                        </div>
+                      </div>
+                      <h3 style={{ marginBottom: '0.75rem' }}>Produtos</h3>
+                      <div style={{ border: '1px solid #e0e0e0', borderRadius: 6, overflow: 'hidden' }}>
+                        <div style={{ background: '#007acc', color: '#fff', display: 'grid', gridTemplateColumns: '2fr 1fr 1fr 1fr 1fr', gap: '1rem', padding: '0.8rem 1rem', fontWeight: 600, fontSize: '0.85rem' }}>
+                          <div>PRODUTO</div><div style={{ textAlign: 'center' }}>QTD</div><div style={{ textAlign: 'center' }}>VALOR UN.</div><div style={{ textAlign: 'center' }}>SUBTOTAL</div><div style={{ textAlign: 'right' }}>CÓDIGO</div>
+                        </div>
+                        {(nota.itens || []).map((item, idx) => (
+                          <div key={item.id} style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr 1fr 1fr', gap: '1rem', padding: '0.8rem 1rem', borderTop: idx > 0 ? '1px solid #eee' : 'none', background: idx % 2 ? '#f9f9f9' : '#fff', fontSize: '0.85rem' }}>
+                            <div style={{ color: '#1a1a1a' }}>{item.descricao}</div>
+                            <div style={{ textAlign: 'center', fontWeight: 600 }}>{Math.round(item.quantidade_nf)}</div>
+                            <div style={{ textAlign: 'center' }}>R$ {item.preco_unitario.toFixed(2)}</div>
+                            <div style={{ textAlign: 'center', color: '#007acc', fontWeight: 600 }}>R$ {(item.quantidade_nf * item.preco_unitario).toFixed(2)}</div>
+                            <div style={{ textAlign: 'right', color: '#666' }}>{item.codigo_produto}</div>
+                          </div>
+                        ))}
+                      </div>
+                      <div style={{ background: '#f5f5f5', border: '2px solid #007acc', padding: '1rem 1.5rem', borderRadius: 6, textAlign: 'right', marginTop: '1.5rem' }}>
+                        <span style={{ color: '#999', fontSize: '0.85rem' }}>VALOR TOTAL DA NOTA </span>
+                        <span style={{ color: '#007acc', fontSize: '1.6rem', fontWeight: 700 }}>R$ {totalValor.toFixed(2)}</span>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* ABA CONFERÊNCIA */}
+                  {abaDetalhe === 'conferencia' && (
+                    <div>
+                      <div style={{ background: '#fff', border: '1px solid #e0e0e0', borderRadius: 8, padding: '1rem 1.25rem', marginBottom: '1.25rem' }}>
+                        <BarraProgresso itens={nota.itens} />
+                      </div>
+                      <div style={{ marginBottom: '1rem' }}>
+                        <button onClick={() => setModalAdicionarProdutoAberto(true)} style={{ padding: '0.6rem 1.1rem', background: '#4caf50', color: '#fff', border: 'none', borderRadius: 6, fontWeight: 600, cursor: 'pointer' }}>+ Adicionar Produto Manual</button>
+                      </div>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                        {(nota.itens || []).map((item) => {
+                          const subido = !!item.estoque_olist_atualizado_em
+                          const conferido = item.quantidade_confirmada !== null && item.quantidade_confirmada !== undefined
+                          return (
+                            <div key={item.id} style={{ border: '1px solid #e0e0e0', borderRadius: 8, padding: '1rem 1.25rem', display: 'grid', gridTemplateColumns: '1fr auto', gap: '1rem', alignItems: 'center' }}>
+                              <div>
+                                <div style={{ fontWeight: 600, color: '#1a1a1a' }}>{item.descricao}</div>
+                                <div style={{ color: '#90a4ae', fontSize: '0.8rem' }}>Cód: {item.codigo_produto} · Esperado: {Math.round(item.quantidade_nf)} un{conferido ? ` · Recebido: ${Math.round(item.quantidade_confirmada as number)}` : ''}</div>
+                                <div style={{ marginTop: 4 }}>
+                                  {subido
+                                    ? <span style={{ background: '#e8f5e9', color: '#2e7d32', fontSize: '0.7rem', fontWeight: 700, padding: '0.15rem 0.5rem', borderRadius: 999 }}>✅ Subido na Olist</span>
+                                    : conferido
+                                      ? <span style={{ background: '#e3f2fd', color: '#1565c0', fontSize: '0.7rem', fontWeight: 700, padding: '0.15rem 0.5rem', borderRadius: 999 }}>🔄 Conferido</span>
+                                      : <span style={{ background: '#fff3e0', color: '#e65100', fontSize: '0.7rem', fontWeight: 700, padding: '0.15rem 0.5rem', borderRadius: 999 }}>🆕 A conferir</span>}
+                                </div>
+                              </div>
+                              <button onClick={() => conferirProduto(item)} style={{ padding: '0.6rem 1.2rem', background: '#007acc', color: '#fff', border: 'none', borderRadius: 6, fontWeight: 600, cursor: 'pointer', whiteSpace: 'nowrap' }}>Conferir</button>
+                            </div>
+                          )
+                        })}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* ABA DIVERGÊNCIAS */}
+                  {abaDetalhe === 'divergencias' && (
+                    <div>
+                      {divs.length === 0 ? (
+                        <p style={{ color: '#999', textAlign: 'center', padding: '2rem' }}>Nenhuma divergência registrada nesta nota.</p>
+                      ) : (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                          {divs.map((div) => (
+                            <div key={div.item_id} style={{ border: '2px solid #f44336', background: '#ffebee', borderRadius: 8, padding: '1rem 1.25rem' }}>
+                              <div style={{ color: '#c62828', fontWeight: 700, marginBottom: 4 }}>{div.tipo_divergencia.toUpperCase().replace('_', ' ')}</div>
+                              <div style={{ fontWeight: 600, color: '#1a1a1a' }}>{div.produto}</div>
+                              <div style={{ color: '#666', fontSize: '0.8rem', marginBottom: '0.75rem' }}>Cód: {div.codigo} · NF: {Math.round(div.quantidade_nf)} · Recebido: {Math.round(div.quantidade_confirmada)}</div>
+                              <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+                                <button onClick={() => resolverDivergenciaItem(div.item_id)} style={{ padding: '0.4rem 0.8rem', background: '#4caf50', color: '#fff', border: 'none', borderRadius: 4, fontSize: '0.78rem', fontWeight: 600, cursor: 'pointer' }}>✓ Resolvida</button>
+                                <button onClick={() => deletarDivergenciaItem(div.item_id)} style={{ padding: '0.4rem 0.8rem', background: '#f44336', color: '#fff', border: 'none', borderRadius: 4, fontSize: '0.78rem', fontWeight: 600, cursor: 'pointer' }}>✗ Deletar</button>
+                                {div.tipo_divergencia !== 'nao_veio' && Math.round(div.quantidade_confirmada) > 0 && (
+                                  <button onClick={() => vincularDivergenciaOlist(div)} style={{ padding: '0.4rem 0.8rem', background: '#007acc', color: '#fff', border: 'none', borderRadius: 4, fontSize: '0.78rem', fontWeight: 700, cursor: 'pointer' }}>🔗 Vincular na Olist e Subir {Math.round(div.quantidade_confirmada)} un</button>
+                                )}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                {/* FOOTER */}
+                <div style={{ borderTop: '1px solid #e0e0e0', padding: '1rem 2rem', display: 'flex', justifyContent: 'flex-end' }}>
+                  <button onClick={() => setNotaDetalheAberta(null)} style={{ padding: '0.7rem 1.5rem', background: '#007acc', color: '#fff', border: 'none', borderRadius: 4, fontWeight: 600, cursor: 'pointer' }}>Fechar</button>
+                </div>
+              </div>
+            </div>
+          )
+        })()}
+
+        {/* Modal de conferência de produto (aberto pela aba Conferência) */}
+        {produtoSelecionado && notaDetalheAberta && (
+          <ModalDetalhesNota
+            isOpen={modalOpen}
+            onClose={() => setModalOpen(false)}
+            produto={produtoSelecionado as any}
+            notaNota={notaDetalheAberta}
+            onNaoConfirmado={(qtd) => irParaOlistSubirEstoque(qtd)}
+            onDivergenciaConfirmada={(qtd) => irParaOlistSubirEstoque(qtd)}
+          />
+        )}
+
+        {/* Modal adicionar produto manual (aba Conferência) */}
+        {modalAdicionarProdutoAberto && notaDetalheAberta && (
+          <div className="modal-overlay" onClick={() => setModalAdicionarProdutoAberto(false)}>
+            <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+              <div className="modal-header">
+                <h2>Adicionar Produto Manual</h2>
+                <button className="modal-close" onClick={() => setModalAdicionarProdutoAberto(false)}>×</button>
+              </div>
+              <div className="modal-body">
+                <div className="form-group">
+                  <label className="form-label">Código do Produto</label>
+                  <input type="text" className="form-input" value={novoProduto.codigo} onChange={(e) => setNovoProduto({ ...novoProduto, codigo: e.target.value })} placeholder="Ex: 001234" />
+                </div>
+                <div className="form-group">
+                  <label className="form-label">Descrição do Produto</label>
+                  <input type="text" className="form-input" value={novoProduto.descricao} onChange={(e) => setNovoProduto({ ...novoProduto, descricao: e.target.value })} placeholder="Ex: Produto XYZ" />
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
+                  <div className="form-group">
+                    <label className="form-label">Quantidade</label>
+                    <input type="text" className="form-input" value={novoProduto.quantidade} onChange={(e) => { const v = e.target.value; if (v === '' || !isNaN(parseFloat(v))) setNovoProduto({ ...novoProduto, quantidade: parseFloat(v) || 0 }) }} placeholder="0" />
+                  </div>
+                  <div className="form-group">
+                    <label className="form-label">Preço Unitário (R$)</label>
+                    <input type="text" className="form-input" value={novoProduto.preco} onChange={(e) => { const v = e.target.value; if (v === '' || !isNaN(parseFloat(v))) setNovoProduto({ ...novoProduto, preco: parseFloat(v) || 0 }) }} placeholder="0.00" />
+                  </div>
+                </div>
+                <div className="button-group">
+                  <button className="btn btn-secondary" onClick={() => setModalAdicionarProdutoAberto(false)}>Cancelar</button>
+                  <button className="btn btn-primary" onClick={handleAdicionarProduto}>Adicionar Produto</button>
+                </div>
+              </div>
+            </div>
+          </div>
         )}
       </div>
     )

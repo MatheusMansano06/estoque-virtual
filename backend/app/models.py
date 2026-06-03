@@ -20,6 +20,8 @@ class NotaFiscal(Base):
     numero_nf = Column(String(20), unique=True, index=True)
     serie = Column(String(10))
     fornecedor = Column(String(255))
+    cnpj = Column(String(20), nullable=True)
+    endereco = Column(String(255), nullable=True)
     data_emissao = Column(DateTime)
     data_upload = Column(DateTime, default=datetime.utcnow)
     arquivo_original = Column(String(255))

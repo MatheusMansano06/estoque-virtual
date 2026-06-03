@@ -60,6 +60,27 @@ class NFeParsing:
             data_emissao = NFeParsing.parse_datetime(data_emissao_str)
             fornecedor = emit.find('nfe:xNome', ns).text if emit is not None else "Desconhecido"
 
+            # CNPJ do emitente (fornecedor)
+            cnpj = ""
+            if emit is not None:
+                cnpj_el = emit.find('nfe:CNPJ', ns)
+                cpf_el = emit.find('nfe:CPF', ns)
+                if cnpj_el is not None and cnpj_el.text:
+                    cnpj = cnpj_el.text
+                elif cpf_el is not None and cpf_el.text:
+                    cnpj = cpf_el.text
+
+            # Endereço do emitente
+            endereco = ""
+            if emit is not None:
+                ender = emit.find('nfe:enderEmit', ns)
+                if ender is not None:
+                    def _t(tag):
+                        el = ender.find(f'nfe:{tag}', ns)
+                        return el.text if el is not None and el.text else ""
+                    partes = [_t('xLgr'), _t('nro'), _t('xBairro'), _t('xMun'), _t('UF')]
+                    endereco = ", ".join([p for p in partes if p])
+
             # Extract items
             itens = []
             for det in root.findall('.//nfe:det', ns):
@@ -78,6 +99,8 @@ class NFeParsing:
                 "serie": serie,
                 "data_emissao": data_emissao,
                 "fornecedor": fornecedor,
+                "cnpj": cnpj,
+                "endereco": endereco,
                 "itens": itens,
                 "sucesso": True
             }

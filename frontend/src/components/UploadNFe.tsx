@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { uploadNFe, UploadResponse } from '../services/api'
+import { uploadNFe, UploadResponse, aceitarSugestaoVinculo } from '../services/api'
 import './UploadNFe.css'
 
 interface UploadNFeProps {
@@ -9,6 +9,7 @@ interface UploadNFeProps {
 export default function UploadNFe({ onUploadSuccess }: UploadNFeProps) {
   const [file, setFile] = useState<File | null>(null)
   const [loading, setLoading] = useState(false)
+  const [acceptingIndex, setAcceptingIndex] = useState<number | null>(null)
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
   const [result, setResult] = useState<UploadResponse | null>(null)
 
@@ -55,6 +56,32 @@ export default function UploadNFe({ onUploadSuccess }: UploadNFeProps) {
     }
   }
 
+  const handleAceitarSugestao = async (index: number) => {
+    if (!result?.sugestoes_vinculacao?.[index]) return
+
+    setAcceptingIndex(index)
+    try {
+      const sugestao = result.sugestoes_vinculacao[index]
+      await aceitarSugestaoVinculo(sugestao.item_id, sugestao.sugestao)
+
+      // Remove a sugestão da lista
+      const novasSugestoes = result.sugestoes_vinculacao.filter((_, i) => i !== index)
+      setResult({ ...result, sugestoes_vinculacao: novasSugestoes })
+
+      setMessage({
+        type: 'success',
+        text: `✓ Vinculado: ${sugestao.sugestao.olist_nome}`
+      })
+    } catch (error: any) {
+      setMessage({
+        type: 'error',
+        text: 'Erro ao aceitar sugestão'
+      })
+    } finally {
+      setAcceptingIndex(null)
+    }
+  }
+
   return (
     <div className="upload-container">
       <form onSubmit={handleSubmit}>
@@ -94,6 +121,38 @@ export default function UploadNFe({ onUploadSuccess }: UploadNFeProps) {
               <dt>Status:</dt>
               <dd>{result.status}</dd>
             </dl>
+
+            {result.sugestoes_vinculacao && result.sugestoes_vinculacao.length > 0 && (
+              <div className="sugestoes-vinculacao">
+                <h4>💡 {result.sugestoes_vinculacao.length} Vinculação(ões) Sugerida(s)</h4>
+                <div className="sugestoes-list">
+                  {result.sugestoes_vinculacao.map((sugestao, idx) => (
+                    <div key={idx} className="sugestao-item">
+                      <div className="sugestao-info">
+                        <div className="produto-nf">
+                          <strong>{sugestao.descricao}</strong>
+                        </div>
+                        <div className="confiance-bar">
+                          <div className="confiance-fill" style={{ width: `${sugestao.confianca}%` }}></div>
+                        </div>
+                        <div className="confiance-text">{sugestao.confianca}% de confiança</div>
+                        <div className="produto-olist">
+                          <small>→ {sugestao.sugestao.olist_nome}</small>
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        className="btn-aceitar"
+                        onClick={() => handleAceitarSugestao(idx)}
+                        disabled={acceptingIndex === idx}
+                      >
+                        {acceptingIndex === idx ? '...' : '✓'}
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         )}
 

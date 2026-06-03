@@ -1,6 +1,6 @@
 from starlette.applications import Starlette
 from starlette.routing import Route, Mount
-from starlette.responses import JSONResponse, FileResponse, RedirectResponse, HTMLResponse
+from starlette.responses import JSONResponse, FileResponse, RedirectResponse, HTMLResponse, Response
 from starlette.middleware.cors import CORSMiddleware
 from starlette.requests import Request
 from sqlalchemy.orm import Session
@@ -12,9 +12,12 @@ import uuid
 import urllib.request
 import urllib.parse
 from dotenv import load_dotenv
+from difflib import SequenceMatcher
+import io
 
 from app.models import NotaFiscal, ItemEstoque, ConfirmacaoEstoque, StatusEstoque, VinculoOlist
 from app.utils.nfe_parser import NFeParsing
+from app.utils.nfe_pdf_generator import NFePDFGenerator
 from app.integracoes_olist import olist
 
 # Carregar variáveis de ambiente do arquivo .env
@@ -99,6 +102,69 @@ def serialize_item(item):
     }
 
 
+def serialize_nota(nf):
+    """Serializa uma NotaFiscal (com itens) para JSON"""
+    return {
+        "id": nf.id,
+        "numero_nf": nf.numero_nf,
+        "serie": nf.serie,
+        "fornecedor": nf.fornecedor,
+        "cnpj": nf.cnpj,
+        "endereco": nf.endereco,
+        "data_emissao": nf.data_emissao.isoformat() if nf.data_emissao else None,
+        "data_upload": nf.data_upload.isoformat() if nf.data_upload else None,
+        "arquivo_original": nf.arquivo_original,
+        "status": nf.status,
+        "erros": nf.erros,
+        "itens": [serialize_item(item) for item in nf.itens],
+    }
+
+
+def similaridade(str1: str, str2: str) -> float:
+    """Calcula similaridade entre duas strings (0 a 1)"""
+    return SequenceMatcher(None, str1.lower(), str2.lower()).ratio()
+
+
+def auto_buscar_vinculo(db: Session, item: ItemEstoque):
+    """
+    Busca automáticamente um vínculo para o item.
+    Retorna (vinculo_encontrado, confianca)
+    - Match exato por código: confiança 100%
+    - Match exato por descrição: confiança 95%
+    - Match por similaridade (>80%): confiança varia
+    """
+    # 1) Tenta match exato por código
+    if item.codigo_produto:
+        vinculo = db.query(VinculoOlist).filter(
+            VinculoOlist.nf_codigo == item.codigo_produto
+        ).order_by(VinculoOlist.vezes_usado.desc()).first()
+        if vinculo:
+            return vinculo, 1.0  # 100% confiança
+
+    # 2) Tenta match exato por descrição
+    if item.descricao:
+        vinculo = db.query(VinculoOlist).filter(
+            VinculoOlist.nf_descricao == item.descricao
+        ).order_by(VinculoOlist.vezes_usado.desc()).first()
+        if vinculo:
+            return vinculo, 0.95  # 95% confiança
+
+    # 3) Tenta fuzzy match por descrição (acima de 80%)
+    if item.descricao:
+        todos_vinculos = db.query(VinculoOlist).all()
+        best_match = None
+        best_score = 0
+        for v in todos_vinculos:
+            score = similaridade(item.descricao, v.nf_descricao)
+            if score > best_score:
+                best_score = score
+                best_match = v
+        if best_match and best_score >= 0.80:
+            return best_match, best_score
+
+    return None, 0
+
+
 async def root(request: Request):
     return JSONResponse({"message": "Estoque Virtual API - Phase 1"})
 
@@ -137,6 +203,8 @@ async def upload_nfe(request: Request):
                 numero_nf=result.get("numero_nf", ""),
                 serie=result.get("serie", "1"),
                 fornecedor=result.get("fornecedor", ""),
+                cnpj=result.get("cnpj", ""),
+                endereco=result.get("endereco", ""),
                 data_emissao=result.get("data_emissao"),
                 arquivo_original=file.filename,
                 tipo_documento="nfe" if file_ext == "xml" else "pdf",
@@ -148,6 +216,9 @@ async def upload_nfe(request: Request):
             db.flush()
 
             # Create items
+            items_criados = []
+            sugestoes_vinculacao = []
+
             for item in result.get("itens", []):
                 estoque_item = ItemEstoque(
                     nf_id=nf.id,
@@ -158,14 +229,43 @@ async def upload_nfe(request: Request):
                     status="quarentena"
                 )
                 db.add(estoque_item)
+                db.flush()  # Para obter o ID do item
+                items_criados.append(estoque_item)
 
             db.commit()
+
+            # Auto-vinculação: buscar sugestões para cada item
+            for estoque_item in items_criados:
+                vinculo, confianca = auto_buscar_vinculo(db, estoque_item)
+                if vinculo:
+                    # Auto-vincular se confiança >= 95% (match exato)
+                    if confianca >= 0.95:
+                        estoque_item.olist_produto_id = vinculo.olist_produto_id
+                        estoque_item.olist_sku = vinculo.olist_sku
+                        estoque_item.olist_nome = vinculo.olist_nome
+                        estoque_item.vinculado_em = datetime.utcnow()
+                        db.commit()
+                    else:
+                        # Sugerir se confiança entre 80% e 95% (fuzzy match)
+                        sugestoes_vinculacao.append({
+                            "item_id": estoque_item.id,
+                            "descricao": estoque_item.descricao,
+                            "confianca": round(confianca * 100, 1),
+                            "sugestao": {
+                                "olist_produto_id": vinculo.olist_produto_id,
+                                "olist_sku": vinculo.olist_sku,
+                                "olist_nome": vinculo.olist_nome,
+                                "olist_preco": vinculo.olist_preco,
+                                "vezes_usado": vinculo.vezes_usado
+                            }
+                        })
 
             return JSONResponse({
                 "id": nf.id,
                 "numero_nf": nf.numero_nf,
                 "status": "processado",
                 "itens_encontrados": len(result.get("itens", [])),
+                "sugestoes_vinculacao": sugestoes_vinculacao,
                 "erros": None
             })
 
@@ -178,27 +278,14 @@ async def upload_nfe(request: Request):
 async def get_nfs(request: Request):
     """List all NFs with pagination"""
     skip = int(request.query_params.get("skip", 0))
-    limit = int(request.query_params.get("limit", 10))
+    limit = int(request.query_params.get("limit", 500))
 
     db = SessionLocal()
     try:
-        nfs = db.query(NotaFiscal).offset(skip).limit(limit).all()
+        nfs = db.query(NotaFiscal).order_by(NotaFiscal.data_upload.desc()).offset(skip).limit(limit).all()
         total = db.query(NotaFiscal).count()
 
-        items = []
-        for nf in nfs:
-            items.append({
-                "id": nf.id,
-                "numero_nf": nf.numero_nf,
-                "serie": nf.serie,
-                "fornecedor": nf.fornecedor,
-                "data_emissao": nf.data_emissao.isoformat() if nf.data_emissao else None,
-                "data_upload": nf.data_upload.isoformat() if nf.data_upload else None,
-                "arquivo_original": nf.arquivo_original,
-                "status": nf.status,
-                "erros": nf.erros,
-                "itens": [serialize_item(item) for item in nf.itens]
-            })
+        items = [serialize_nota(nf) for nf in nfs]
 
         return JSONResponse({
             "total": total,
@@ -220,18 +307,7 @@ async def get_nf(request: Request):
         if not nf:
             return JSONResponse({"error": "NF não encontrada"}, status_code=404)
 
-        return JSONResponse({
-            "id": nf.id,
-            "numero_nf": nf.numero_nf,
-            "serie": nf.serie,
-            "fornecedor": nf.fornecedor,
-            "data_emissao": nf.data_emissao.isoformat() if nf.data_emissao else None,
-            "data_upload": nf.data_upload.isoformat() if nf.data_upload else None,
-            "arquivo_original": nf.arquivo_original,
-            "status": nf.status,
-            "erros": nf.erros,
-            "itens": [serialize_item(item) for item in nf.itens]
-        })
+        return JSONResponse(serialize_nota(nf))
     finally:
         db.close()
 
@@ -680,6 +756,64 @@ async def vincular_produto_olist(request: Request):
         db.close()
 
 
+async def aceitar_sugestao_vinculo(request: Request):
+    """Aceita uma sugestão de vinculação automática (fuzzy match)"""
+    db = SessionLocal()
+    try:
+        data = await request.json()
+        item_id = data.get("item_id")
+        olist_produto_id = data.get("olist_produto_id")
+        olist_sku = data.get("olist_sku", "")
+        olist_nome = data.get("olist_nome", "")
+        olist_preco = float(data.get("olist_preco", 0) or 0)
+
+        item = db.query(ItemEstoque).filter(ItemEstoque.id == item_id).first()
+        if not item:
+            return JSONResponse({"error": "Item não encontrado"}, status_code=404)
+
+        # Vincular item
+        item.olist_produto_id = olist_produto_id
+        item.olist_sku = olist_sku
+        item.olist_nome = olist_nome
+        item.vinculado_em = datetime.utcnow()
+
+        # Atualizar memória de vínculos
+        vinculo = db.query(VinculoOlist).filter(
+            VinculoOlist.nf_descricao == item.descricao,
+            VinculoOlist.olist_produto_id == str(olist_produto_id)
+        ).first()
+
+        if vinculo:
+            vinculo.nf_codigo = item.codigo_produto
+            vinculo.vezes_usado = (vinculo.vezes_usado or 1) + 1
+            vinculo.atualizado_em = datetime.utcnow()
+        else:
+            vinculo = VinculoOlist(
+                nf_codigo=item.codigo_produto,
+                nf_descricao=item.descricao,
+                olist_produto_id=str(olist_produto_id),
+                olist_sku=olist_sku,
+                olist_nome=olist_nome,
+                olist_preco=olist_preco,
+                vezes_usado=1,
+            )
+            db.add(vinculo)
+
+        db.commit()
+
+        return JSONResponse({
+            "sucesso": True,
+            "mensagem": f"Sugestão aceita: {olist_nome}",
+            "item_id": item_id
+        })
+
+    except Exception as e:
+        db.rollback()
+        return JSONResponse({"error": str(e)}, status_code=500)
+    finally:
+        db.close()
+
+
 async def atualizar_estoque_olist(request: Request):
     """Atualiza estoque do produto na Olist (entrada de mercadoria da NF)"""
     db = SessionLocal()
@@ -811,6 +945,136 @@ async def olist_deletar_vinculo(request: Request):
         db.close()
 
 
+async def excluir_nota_fiscal(request: Request):
+    """Exclui uma nota fiscal e todos os seus itens"""
+    db = SessionLocal()
+    try:
+        data = await request.json()
+        nf_id = data.get("nf_id")
+
+        nf = db.query(NotaFiscal).filter(NotaFiscal.id == nf_id).first()
+        if not nf:
+            return JSONResponse({"error": "Nota fiscal não encontrada"}, status_code=404)
+
+        # Excluir arquivo se existir
+        try:
+            arquivo_path = os.path.join(UPLOAD_DIR, nf.arquivo_original)
+            if os.path.exists(arquivo_path):
+                os.remove(arquivo_path)
+        except:
+            pass
+
+        # Excluir nota (cascata deleta itens)
+        db.delete(nf)
+        db.commit()
+
+        return JSONResponse({
+            "sucesso": True,
+            "mensagem": f"Nota fiscal #{nf.numero_nf} excluída com sucesso"
+        })
+    except Exception as e:
+        db.rollback()
+        return JSONResponse({"error": str(e)}, status_code=500)
+    finally:
+        db.close()
+
+
+async def excluir_multiplas_notas(request: Request):
+    """Exclui múltiplas notas fiscais"""
+    db = SessionLocal()
+    try:
+        data = await request.json()
+        nf_ids = data.get("nf_ids", [])
+
+        if not nf_ids:
+            return JSONResponse({"error": "Nenhuma nota selecionada"}, status_code=400)
+
+        deletadas = 0
+        for nf_id in nf_ids:
+            nf = db.query(NotaFiscal).filter(NotaFiscal.id == nf_id).first()
+            if nf:
+                try:
+                    arquivo_path = os.path.join(UPLOAD_DIR, nf.arquivo_original)
+                    if os.path.exists(arquivo_path):
+                        os.remove(arquivo_path)
+                except:
+                    pass
+                db.delete(nf)
+                deletadas += 1
+
+        db.commit()
+
+        return JSONResponse({
+            "sucesso": True,
+            "mensagem": f"{deletadas} nota(s) excluída(s) com sucesso"
+        })
+    except Exception as e:
+        db.rollback()
+        return JSONResponse({"error": str(e)}, status_code=500)
+    finally:
+        db.close()
+
+
+async def baixar_nota_fiscal(request: Request):
+    """Baixa o arquivo original da nota fiscal"""
+    nf_id = int(request.path_params['nf_id'])
+
+    db = SessionLocal()
+    try:
+        nf = db.query(NotaFiscal).filter(NotaFiscal.id == nf_id).first()
+        if not nf:
+            return JSONResponse({"error": "Nota fiscal não encontrada"}, status_code=404)
+
+        arquivo_path = os.path.join(UPLOAD_DIR, nf.arquivo_original)
+        if not os.path.exists(arquivo_path):
+            return JSONResponse({"error": "Arquivo não encontrado"}, status_code=404)
+
+        return FileResponse(
+            arquivo_path,
+            filename=nf.arquivo_original,
+            media_type='application/octet-stream'
+        )
+    finally:
+        db.close()
+
+
+async def gerar_pdf_nota_fiscal(request: Request):
+    """Gera e baixa um PDF formatado da nota fiscal"""
+    nf_id = int(request.path_params['nf_id'])
+
+    db = SessionLocal()
+    try:
+        nf = db.query(NotaFiscal).filter(NotaFiscal.id == nf_id).first()
+        if not nf:
+            return JSONResponse({"error": "Nota fiscal não encontrada"}, status_code=404)
+
+        # Se o arquivo é XML, gerar PDF a partir dele
+        if nf.tipo_documento == "nfe" and nf.xml_processado:
+            pdf_bytes = NFePDFGenerator.gerar_pdf(nf.xml_processado if isinstance(nf.xml_processado, bytes) else nf.xml_processado.encode('utf-8', errors='ignore'))
+            if pdf_bytes:
+                return Response(
+                    content=bytes(pdf_bytes) if isinstance(pdf_bytes, bytearray) else pdf_bytes,
+                    media_type='application/pdf',
+                    headers={'Content-Disposition': f'attachment; filename="NF-{nf.numero_nf}.pdf"'}
+                )
+
+        # Se não conseguiu gerar PDF, retorna o arquivo original
+        arquivo_path = os.path.join(UPLOAD_DIR, nf.arquivo_original)
+        if not os.path.exists(arquivo_path):
+            return JSONResponse({"error": "Arquivo não encontrado"}, status_code=404)
+
+        return FileResponse(
+            arquivo_path,
+            filename=f"NF-{nf.numero_nf}.pdf" if nf.arquivo_original.endswith('.pdf') else nf.arquivo_original,
+            media_type='application/pdf' if nf.arquivo_original.endswith('.pdf') else 'application/octet-stream'
+        )
+
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+    finally:
+        db.close()
+
+
 async def olist_conectar(request: Request):
     """Redireciona o usuário para autorizar o app no Olist"""
     if not olist.enabled:
@@ -866,6 +1130,10 @@ routes = [
     Route("/api/upload-nfe", upload_nfe, methods=["POST"]),
     Route("/api/notas-fiscais", get_nfs, methods=["GET"]),
     Route("/api/notas-fiscais/{nf_id}", get_nf, methods=["GET"]),
+    Route("/api/notas-fiscais/{nf_id}/baixar", baixar_nota_fiscal, methods=["GET"]),
+    Route("/api/notas-fiscais/{nf_id}/pdf", gerar_pdf_nota_fiscal, methods=["GET"]),
+    Route("/api/notas-fiscais/deletar", excluir_nota_fiscal, methods=["POST"]),
+    Route("/api/notas-fiscais/deletar-multiplas", excluir_multiplas_notas, methods=["POST"]),
     Route("/api/estoque-virtual", get_estoque_virtual, methods=["GET"]),
     Route("/api/confirmar-estoque", confirmar_estoque, methods=["POST"]),
     Route("/api/registrar-divergencia", registrar_divergencia, methods=["POST"]),
@@ -881,6 +1149,7 @@ routes = [
     Route("/api/olist/status", olist_status, methods=["GET"]),
     Route("/api/olist/produtos", buscar_produtos_olist, methods=["GET"]),
     Route("/api/olist/vincular-produto", vincular_produto_olist, methods=["POST"]),
+    Route("/api/olist/aceitar-sugestao", aceitar_sugestao_vinculo, methods=["POST"]),
     Route("/api/olist/atualizar-estoque", atualizar_estoque_olist, methods=["POST"]),
     # Memória de vínculos (de-para fornecedor -> Olist)
     Route("/api/olist/sugestao-vinculo", olist_sugestao_vinculo, methods=["GET"]),
