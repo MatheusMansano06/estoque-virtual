@@ -678,8 +678,7 @@ function App() {
           `Produto vinculado e estoque atualizado na Olist.\n` +
           `Novo estoque: ${novoSaldo} unidades`
         )
-        // Limpar seleção para próximo produto
-        setProdutoSelecionado(null)
+        // Limpar apenas a seleção da Olist, mantendo o produto para conferência
         setProdutoOlistSelecionado({
           id: '',
           sku: '',
