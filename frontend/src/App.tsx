@@ -681,6 +681,7 @@ function App() {
         // Recarregar dados para a barra de progresso refletir a subida
         await loadNotas()
         await loadDivergencias()
+        setModalDetalhesNFAberto(false)
         setPagina('conferencia')
       } else {
         alert('⚠️ Produto vinculado, mas falha ao atualizar estoque: ' + (dataEst.error || 'desconhecido'))
