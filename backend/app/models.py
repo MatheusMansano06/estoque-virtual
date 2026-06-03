@@ -20,6 +20,7 @@ class NotaFiscal(Base):
     numero_nf = Column(String(20), unique=True, index=True)
     serie = Column(String(10))
     fornecedor = Column(String(255))
+    fornecedor_id = Column(Integer, ForeignKey("fornecedores.id"), nullable=True)  # Novo: link com Fornecedor
     cnpj = Column(String(20), nullable=True)
     endereco = Column(String(255), nullable=True)
     data_emissao = Column(DateTime)
@@ -31,6 +32,7 @@ class NotaFiscal(Base):
     erros = Column(Text, nullable=True)
 
     itens = relationship("ItemEstoque", back_populates="nota_fiscal", cascade="all, delete-orphan")
+    fornecedor_obj = relationship("Fornecedor", back_populates="notas_fiscais")
 
 class ItemEstoque(Base):
     __tablename__ = "itens_estoque"
@@ -100,3 +102,78 @@ class VinculoOlist(Base):
     vezes_usado = Column(Integer, default=1)
     criado_em = Column(DateTime, default=datetime.utcnow)
     atualizado_em = Column(DateTime, default=datetime.utcnow)
+
+
+class Fornecedor(Base):
+    """
+    Cadastro centralizado de fornecedores com contatos para notificações
+    """
+    __tablename__ = "fornecedores"
+
+    id = Column(Integer, primary_key=True)
+    nome = Column(String(255), unique=True, index=True)
+    cnpj = Column(String(20), nullable=True)
+    contato_whatsapp = Column(String(20), nullable=True)  # Formato: 5519978149245
+    email = Column(String(255), nullable=True)
+    endereco = Column(Text, nullable=True)
+    criado_em = Column(DateTime, default=datetime.utcnow)
+    ativo = Column(Integer, default=1)  # 1 = ativo, 0 = inativo
+
+    notas_fiscais = relationship("NotaFiscal", back_populates="fornecedor_obj")
+    historico_compras = relationship("HistoricoCompra", back_populates="fornecedor", cascade="all, delete-orphan")
+    notificacoes = relationship("NotificacaoFornecedor", back_populates="fornecedor", cascade="all, delete-orphan")
+
+
+class HistoricoCompra(Base):
+    """
+    Rastreamento de quais fornecedores forneceram cada produto.
+    Criado quando um item de estoque é confirmado (não no upload da NF).
+    """
+    __tablename__ = "historico_compras"
+
+    id = Column(Integer, primary_key=True)
+    fornecedor_id = Column(Integer, ForeignKey("fornecedores.id"), index=True)
+    nf_id = Column(Integer, ForeignKey("notas_fiscais.id"), nullable=True)
+    produto_codigo = Column(String(100), index=True)
+    produto_descricao = Column(String(255))
+    quantidade = Column(Float)  # Quantidade confirmada
+    data_compra = Column(DateTime, default=datetime.utcnow)
+    nf_numero = Column(String(20), nullable=True)
+
+    fornecedor = relationship("Fornecedor", back_populates="historico_compras")
+
+
+class ConfiguracaoEstoqueMinimo(Base):
+    """
+    Define o estoque mínimo para cada produto e se deve notificar fornecedores
+    """
+    __tablename__ = "configuracoes_estoque_minimo"
+
+    id = Column(Integer, primary_key=True)
+    produto_codigo = Column(String(100), unique=True, index=True)
+    estoque_minimo = Column(Float, default=10)
+    notificar_fornecedores = Column(Integer, default=1)  # 1 = ativo, 0 = desativo
+    criado_em = Column(DateTime, default=datetime.utcnow)
+    atualizado_em = Column(DateTime, default=datetime.utcnow)
+
+
+class NotificacaoFornecedor(Base):
+    """
+    Histórico de notificações enviadas aos fornecedores
+    Usado para auditoria e evitar envios duplicados
+    """
+    __tablename__ = "notificacoes_fornecedores"
+
+    id = Column(Integer, primary_key=True)
+    fornecedor_id = Column(Integer, ForeignKey("fornecedores.id"))
+    produto_codigo = Column(String(100), index=True)
+    produto_descricao = Column(String(255))
+    quantidade_atual = Column(Float)
+    estoque_minimo = Column(Float)
+    mensagem = Column(Text)
+    telefone_usado = Column(String(20))
+    enviado_em = Column(DateTime, default=datetime.utcnow)
+    status = Column(String(50), default="enviado")  # enviado, falha, pendente
+    erro_mensagem = Column(Text, nullable=True)
+
+    fornecedor = relationship("Fornecedor", back_populates="notificacoes")

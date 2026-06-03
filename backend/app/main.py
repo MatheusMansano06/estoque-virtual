@@ -15,10 +15,15 @@ from dotenv import load_dotenv
 from difflib import SequenceMatcher
 import io
 
-from app.models import NotaFiscal, ItemEstoque, ConfirmacaoEstoque, StatusEstoque, VinculoOlist
+from app.models import (
+    NotaFiscal, ItemEstoque, ConfirmacaoEstoque, StatusEstoque, VinculoOlist,
+    Fornecedor, HistoricoCompra, ConfiguracaoEstoqueMinimo, NotificacaoFornecedor
+)
 from app.utils.nfe_parser import NFeParsing
 from app.utils.nfe_pdf_generator import NFePDFGenerator
+from app.utils.fornecedores import garantir_fornecedor, linkar_fornecedor_nf
 from app.integracoes_olist import olist
+from app.jobs import iniciar_scheduler
 
 # Carregar variáveis de ambiente do arquivo .env
 load_dotenv()
@@ -215,6 +220,9 @@ async def upload_nfe(request: Request):
             db.add(nf)
             db.flush()
 
+            # Garantir que fornecedor existe e linkar à nota fiscal
+            linkar_fornecedor_nf(db, nf)
+
             # Create items
             items_criados = []
             sugestoes_vinculacao = []
@@ -385,6 +393,42 @@ async def confirmar_estoque(request: Request):
             observacoes=observacoes
         )
         db.add(confirmacao)
+
+        # Se confirmado SEM divergência, criar entrada no histórico de compras
+        if not divergencia and quantidade_confirmada > 0:
+            nf = item.nota_fiscal
+            if nf:
+                # Encontrar ou criar fornecedor baseado no nome da NF
+                fornecedor = db.query(Fornecedor).filter(
+                    Fornecedor.nome == nf.fornecedor
+                ).first()
+
+                if not fornecedor:
+                    # Auto-criar fornecedor se não existe
+                    fornecedor = Fornecedor(
+                        nome=nf.fornecedor,
+                        cnpj=nf.cnpj,
+                        endereco=nf.endereco,
+                        ativo=1
+                    )
+                    db.add(fornecedor)
+                    db.flush()
+
+                # Criar entrada no histórico de compras
+                historico = HistoricoCompra(
+                    fornecedor_id=fornecedor.id,
+                    nf_id=nf.id,
+                    produto_codigo=item.codigo_produto,
+                    produto_descricao=item.descricao,
+                    quantidade=quantidade_confirmada,
+                    nf_numero=nf.numero_nf
+                )
+                db.add(historico)
+
+                # Linkar fornecedor à nota fiscal se não tiver
+                if not nf.fornecedor_id:
+                    nf.fornecedor_id = fornecedor.id
+
         db.commit()
 
         return JSONResponse({
@@ -394,6 +438,7 @@ async def confirmar_estoque(request: Request):
             "divergencia": divergencia
         })
     except Exception as e:
+        db.rollback()
         return JSONResponse({"error": str(e)}, status_code=500)
     finally:
         db.close()
@@ -1145,6 +1190,500 @@ async def olist_callback(request: Request):
         """, status_code=500)
 
 
+# ===== ENDPOINTS: GESTÃO DE FORNECEDORES =====
+
+async def criar_fornecedor(request: Request):
+    """Cria um novo fornecedor"""
+    db = SessionLocal()
+    try:
+        data = await request.json()
+
+        # Validações básicas
+        nome = data.get("nome", "").strip()
+        if not nome:
+            return JSONResponse({"error": "Nome é obrigatório"}, status_code=400)
+
+        # Verificar se já existe fornecedor com esse nome
+        existente = db.query(Fornecedor).filter(Fornecedor.nome == nome).first()
+        if existente:
+            return JSONResponse({"error": f"Fornecedor '{nome}' já existe"}, status_code=400)
+
+        fornecedor = Fornecedor(
+            nome=nome,
+            cnpj=data.get("cnpj", "").strip() or None,
+            contato_whatsapp=data.get("contato_whatsapp", "").strip() or None,
+            email=data.get("email", "").strip() or None,
+            endereco=data.get("endereco", "").strip() or None,
+            ativo=int(data.get("ativo", 1))
+        )
+
+        db.add(fornecedor)
+        db.commit()
+
+        return JSONResponse({
+            "sucesso": True,
+            "fornecedor": {
+                "id": fornecedor.id,
+                "nome": fornecedor.nome,
+                "cnpj": fornecedor.cnpj,
+                "contato_whatsapp": fornecedor.contato_whatsapp,
+                "email": fornecedor.email,
+                "endereco": fornecedor.endereco,
+                "ativo": fornecedor.ativo,
+                "criado_em": fornecedor.criado_em.isoformat()
+            }
+        })
+    except Exception as e:
+        db.rollback()
+        return JSONResponse({"error": str(e)}, status_code=500)
+    finally:
+        db.close()
+
+
+async def listar_fornecedores(request: Request):
+    """Lista todos os fornecedores"""
+    db = SessionLocal()
+    try:
+        skip = int(request.query_params.get("skip", 0))
+        limit = int(request.query_params.get("limit", 100))
+        ativo_only = request.query_params.get("ativo", "1") == "1"
+
+        query = db.query(Fornecedor)
+        if ativo_only:
+            query = query.filter(Fornecedor.ativo == 1)
+
+        fornecedores = query.order_by(Fornecedor.nome).offset(skip).limit(limit).all()
+        total = db.query(Fornecedor).count()
+
+        return JSONResponse({
+            "total": total,
+            "skip": skip,
+            "limit": limit,
+            "fornecedores": [{
+                "id": f.id,
+                "nome": f.nome,
+                "cnpj": f.cnpj,
+                "contato_whatsapp": f.contato_whatsapp,
+                "email": f.email,
+                "endereco": f.endereco,
+                "ativo": f.ativo,
+                "criado_em": f.criado_em.isoformat()
+            } for f in fornecedores]
+        })
+    finally:
+        db.close()
+
+
+async def editar_fornecedor(request: Request):
+    """Edita um fornecedor existente"""
+    db = SessionLocal()
+    try:
+        fornecedor_id = int(request.path_params['id'])
+        fornecedor = db.query(Fornecedor).filter(Fornecedor.id == fornecedor_id).first()
+
+        if not fornecedor:
+            return JSONResponse({"error": "Fornecedor não encontrado"}, status_code=404)
+
+        data = await request.json()
+
+        if "nome" in data:
+            nome = data["nome"].strip()
+            if nome and nome != fornecedor.nome:
+                # Verificar se já existe outro com esse nome
+                existente = db.query(Fornecedor).filter(
+                    Fornecedor.nome == nome,
+                    Fornecedor.id != fornecedor_id
+                ).first()
+                if existente:
+                    return JSONResponse({"error": f"Fornecedor '{nome}' já existe"}, status_code=400)
+            fornecedor.nome = nome
+
+        if "cnpj" in data:
+            fornecedor.cnpj = data["cnpj"].strip() or None
+        if "contato_whatsapp" in data:
+            fornecedor.contato_whatsapp = data["contato_whatsapp"].strip() or None
+        if "email" in data:
+            fornecedor.email = data["email"].strip() or None
+        if "endereco" in data:
+            fornecedor.endereco = data["endereco"].strip() or None
+        if "ativo" in data:
+            fornecedor.ativo = int(data["ativo"])
+
+        db.commit()
+
+        return JSONResponse({
+            "sucesso": True,
+            "fornecedor": {
+                "id": fornecedor.id,
+                "nome": fornecedor.nome,
+                "cnpj": fornecedor.cnpj,
+                "contato_whatsapp": fornecedor.contato_whatsapp,
+                "email": fornecedor.email,
+                "endereco": fornecedor.endereco,
+                "ativo": fornecedor.ativo,
+                "criado_em": fornecedor.criado_em.isoformat()
+            }
+        })
+    except Exception as e:
+        db.rollback()
+        return JSONResponse({"error": str(e)}, status_code=500)
+    finally:
+        db.close()
+
+
+async def deletar_fornecedor(request: Request):
+    """Deleta um fornecedor"""
+    db = SessionLocal()
+    try:
+        fornecedor_id = int(request.path_params['id'])
+        fornecedor = db.query(Fornecedor).filter(Fornecedor.id == fornecedor_id).first()
+
+        if not fornecedor:
+            return JSONResponse({"error": "Fornecedor não encontrado"}, status_code=404)
+
+        nome = fornecedor.nome
+        db.delete(fornecedor)
+        db.commit()
+
+        return JSONResponse({
+            "sucesso": True,
+            "mensagem": f"Fornecedor '{nome}' deletado com sucesso"
+        })
+    except Exception as e:
+        db.rollback()
+        return JSONResponse({"error": str(e)}, status_code=500)
+    finally:
+        db.close()
+
+
+# ===== ENDPOINTS: CONFIGURAÇÃO DE ESTOQUE MÍNIMO =====
+
+async def criar_estoque_minimo(request: Request):
+    """Cria/atualiza configuração de estoque mínimo para um produto"""
+    db = SessionLocal()
+    try:
+        data = await request.json()
+
+        produto_codigo = data.get("produto_codigo", "").strip()
+        if not produto_codigo:
+            return JSONResponse({"error": "produto_codigo é obrigatório"}, status_code=400)
+
+        estoque_minimo = float(data.get("estoque_minimo", 10))
+        notificar = int(data.get("notificar_fornecedores", 1))
+
+        config = db.query(ConfiguracaoEstoqueMinimo).filter(
+            ConfiguracaoEstoqueMinimo.produto_codigo == produto_codigo
+        ).first()
+
+        if config:
+            config.estoque_minimo = estoque_minimo
+            config.notificar_fornecedores = notificar
+            config.atualizado_em = datetime.utcnow()
+        else:
+            config = ConfiguracaoEstoqueMinimo(
+                produto_codigo=produto_codigo,
+                estoque_minimo=estoque_minimo,
+                notificar_fornecedores=notificar
+            )
+            db.add(config)
+
+        db.commit()
+
+        return JSONResponse({
+            "sucesso": True,
+            "config": {
+                "id": config.id,
+                "produto_codigo": config.produto_codigo,
+                "estoque_minimo": config.estoque_minimo,
+                "notificar_fornecedores": config.notificar_fornecedores,
+                "atualizado_em": config.atualizado_em.isoformat()
+            }
+        })
+    except Exception as e:
+        db.rollback()
+        return JSONResponse({"error": str(e)}, status_code=500)
+    finally:
+        db.close()
+
+
+async def listar_estoque_minimo(request: Request):
+    """Lista configurações de estoque mínimo"""
+    db = SessionLocal()
+    try:
+        skip = int(request.query_params.get("skip", 0))
+        limit = int(request.query_params.get("limit", 100))
+
+        configs = db.query(ConfiguracaoEstoqueMinimo).order_by(
+            ConfiguracaoEstoqueMinimo.produto_codigo
+        ).offset(skip).limit(limit).all()
+
+        total = db.query(ConfiguracaoEstoqueMinimo).count()
+
+        return JSONResponse({
+            "total": total,
+            "skip": skip,
+            "limit": limit,
+            "configuracoes": [{
+                "id": c.id,
+                "produto_codigo": c.produto_codigo,
+                "estoque_minimo": c.estoque_minimo,
+                "notificar_fornecedores": c.notificar_fornecedores,
+                "criado_em": c.criado_em.isoformat(),
+                "atualizado_em": c.atualizado_em.isoformat()
+            } for c in configs]
+        })
+    finally:
+        db.close()
+
+
+async def editar_estoque_minimo(request: Request):
+    """Edita configuração de estoque mínimo"""
+    db = SessionLocal()
+    try:
+        produto_codigo = request.path_params['produto_codigo']
+
+        config = db.query(ConfiguracaoEstoqueMinimo).filter(
+            ConfiguracaoEstoqueMinimo.produto_codigo == produto_codigo
+        ).first()
+
+        if not config:
+            return JSONResponse({"error": "Configuração não encontrada"}, status_code=404)
+
+        data = await request.json()
+
+        if "estoque_minimo" in data:
+            config.estoque_minimo = float(data["estoque_minimo"])
+        if "notificar_fornecedores" in data:
+            config.notificar_fornecedores = int(data["notificar_fornecedores"])
+
+        config.atualizado_em = datetime.utcnow()
+        db.commit()
+
+        return JSONResponse({
+            "sucesso": True,
+            "config": {
+                "id": config.id,
+                "produto_codigo": config.produto_codigo,
+                "estoque_minimo": config.estoque_minimo,
+                "notificar_fornecedores": config.notificar_fornecedores,
+                "atualizado_em": config.atualizado_em.isoformat()
+            }
+        })
+    except Exception as e:
+        db.rollback()
+        return JSONResponse({"error": str(e)}, status_code=500)
+    finally:
+        db.close()
+
+
+# ===== ENDPOINTS: HISTÓRICO E NOTIFICAÇÕES =====
+
+async def historico_compras_produto(request: Request):
+    """Retorna lista de fornecedores que já forneceram um produto"""
+    db = SessionLocal()
+    try:
+        produto_codigo = request.path_params['produto_codigo']
+
+        historico = db.query(HistoricoCompra).filter(
+            HistoricoCompra.produto_codigo == produto_codigo
+        ).order_by(HistoricoCompra.data_compra.desc()).all()
+
+        # Agrupar por fornecedor
+        fornecedores = {}
+        for h in historico:
+            if h.fornecedor_id not in fornecedores:
+                fornecedor = db.query(Fornecedor).filter(Fornecedor.id == h.fornecedor_id).first()
+                if fornecedor:
+                    fornecedores[h.fornecedor_id] = {
+                        "id": fornecedor.id,
+                        "nome": fornecedor.nome,
+                        "contato_whatsapp": fornecedor.contato_whatsapp,
+                        "email": fornecedor.email,
+                        "compras": []
+                    }
+
+            if h.fornecedor_id in fornecedores:
+                fornecedores[h.fornecedor_id]["compras"].append({
+                    "quantidade": h.quantidade,
+                    "data_compra": h.data_compra.isoformat(),
+                    "nf_numero": h.nf_numero
+                })
+
+        return JSONResponse({
+            "produto_codigo": produto_codigo,
+            "total_fornecedores": len(fornecedores),
+            "fornecedores": list(fornecedores.values())
+        })
+    finally:
+        db.close()
+
+
+async def notificar_fornecedores(request: Request):
+    """
+    Notifica fornecedores de produtos com estoque baixo via WhatsApp.
+    Pode ser acionado manualmente ou pela rotina diária.
+    """
+    db = SessionLocal()
+    try:
+        # Encontrar todos os produtos com estoque abaixo do mínimo
+        produtos_baixos = []
+
+        configs = db.query(ConfiguracaoEstoqueMinimo).filter(
+            ConfiguracaoEstoqueMinimo.notificar_fornecedores == 1
+        ).all()
+
+        for config in configs:
+            # Somar todas as quantidades confirmadas deste produto
+            total_estoque = db.query(ItemEstoque).filter(
+                ItemEstoque.codigo_produto == config.produto_codigo,
+                ItemEstoque.status == StatusEstoque.CONFIRMADO
+            ).all()
+
+            quantidade_total = sum(item.quantidade_confirmada or 0 for item in total_estoque)
+
+            if quantidade_total <= config.estoque_minimo:
+                produtos_baixos.append({
+                    "produto_codigo": config.produto_codigo,
+                    "estoque_minimo": config.estoque_minimo,
+                    "quantidade_atual": quantidade_total,
+                    "itens": total_estoque
+                })
+
+        if not produtos_baixos:
+            return JSONResponse({
+                "sucesso": True,
+                "notificacoes_enviadas": 0,
+                "mensagem": "Nenhum produto com estoque baixo"
+            })
+
+        notificacoes_enviadas = []
+
+        # Para cada produto com estoque baixo, notificar os fornecedores
+        for produto in produtos_baixos:
+            codigo = produto["produto_codigo"]
+
+            # Obter descrição do produto
+            item = produto["itens"][0] if produto["itens"] else None
+            descricao = item.descricao if item else codigo
+
+            # Buscar fornecedores que já forneceram este produto
+            historico = db.query(HistoricoCompra).filter(
+                HistoricoCompra.produto_codigo == codigo
+            ).distinct(HistoricoCompra.fornecedor_id).all()
+
+            fornecedor_ids = [h.fornecedor_id for h in historico]
+
+            if not fornecedor_ids:
+                continue
+
+            fornecedores = db.query(Fornecedor).filter(
+                Fornecedor.id.in_(fornecedor_ids),
+                Fornecedor.ativo == 1,
+                Fornecedor.contato_whatsapp != None
+            ).all()
+
+            for fornecedor in fornecedores:
+                # Verificar se já foi notificado hoje
+                hoje = datetime.utcnow().date()
+                ja_notificado = db.query(NotificacaoFornecedor).filter(
+                    NotificacaoFornecedor.fornecedor_id == fornecedor.id,
+                    NotificacaoFornecedor.produto_codigo == codigo,
+                    NotificacaoFornecedor.status == "enviado"
+                ).first()
+
+                # Se já foi notificado hoje, pula
+                if ja_notificado and ja_notificado.enviado_em.date() == hoje:
+                    continue
+
+                # Construir mensagem
+                mensagem = f"""📦 ALERTA DE ESTOQUE BAIXO - Estoque Virtual
+
+Produto: {descricao}
+Código: {codigo}
+Estoque Atual: {produto['quantidade_atual']} un
+Estoque Mínimo: {produto['estoque_minimo']} un
+
+Você já forneceu este produto anteriormente.
+Favor entrar em contato para recompra.
+
+Obrigado!"""
+
+                # Gerar WhatsApp link
+                telefone = fornecedor.contato_whatsapp
+                mensagem_encoded = urllib.parse.quote(mensagem)
+                whatsapp_link = f"https://wa.me/{telefone}?text={mensagem_encoded}"
+
+                # Registrar notificação no banco
+                notif = NotificacaoFornecedor(
+                    fornecedor_id=fornecedor.id,
+                    produto_codigo=codigo,
+                    produto_descricao=descricao,
+                    quantidade_atual=produto['quantidade_atual'],
+                    estoque_minimo=produto['estoque_minimo'],
+                    mensagem=mensagem,
+                    telefone_usado=telefone,
+                    status="enviado"
+                )
+
+                db.add(notif)
+                notificacoes_enviadas.append({
+                    "fornecedor_id": fornecedor.id,
+                    "fornecedor_nome": fornecedor.nome,
+                    "produto_codigo": codigo,
+                    "telefone": telefone,
+                    "whatsapp_link": whatsapp_link
+                })
+
+        db.commit()
+
+        return JSONResponse({
+            "sucesso": True,
+            "notificacoes_enviadas": len(notificacoes_enviadas),
+            "notificacoes": notificacoes_enviadas
+        })
+
+    except Exception as e:
+        db.rollback()
+        return JSONResponse({"error": str(e)}, status_code=500)
+    finally:
+        db.close()
+
+
+async def historico_notificacoes(request: Request):
+    """Lista histórico de notificações enviadas"""
+    db = SessionLocal()
+    try:
+        skip = int(request.query_params.get("skip", 0))
+        limit = int(request.query_params.get("limit", 100))
+
+        notificacoes = db.query(NotificacaoFornecedor).order_by(
+            NotificacaoFornecedor.enviado_em.desc()
+        ).offset(skip).limit(limit).all()
+
+        total = db.query(NotificacaoFornecedor).count()
+
+        return JSONResponse({
+            "total": total,
+            "skip": skip,
+            "limit": limit,
+            "notificacoes": [{
+                "id": n.id,
+                "fornecedor_id": n.fornecedor_id,
+                "fornecedor_nome": n.fornecedor.nome if n.fornecedor else "Desconhecido",
+                "produto_codigo": n.produto_codigo,
+                "produto_descricao": n.produto_descricao,
+                "quantidade_atual": n.quantidade_atual,
+                "estoque_minimo": n.estoque_minimo,
+                "telefone_usado": n.telefone_usado,
+                "enviado_em": n.enviado_em.isoformat(),
+                "status": n.status,
+                "erro_mensagem": n.erro_mensagem
+            } for n in notificacoes]
+        })
+    finally:
+        db.close()
+
+
 routes = [
     Route("/", root, methods=["GET"]),
     Route("/api/upload-nfe", upload_nfe, methods=["POST"]),
@@ -1176,6 +1715,19 @@ routes = [
     Route("/api/olist/sugestao-vinculo", olist_sugestao_vinculo, methods=["GET"]),
     Route("/api/olist/vinculos", olist_listar_vinculos, methods=["GET"]),
     Route("/api/olist/vinculos/deletar", olist_deletar_vinculo, methods=["POST"]),
+    # Gestão de Fornecedores
+    Route("/api/fornecedores", criar_fornecedor, methods=["POST"]),
+    Route("/api/fornecedores", listar_fornecedores, methods=["GET"]),
+    Route("/api/fornecedores/{id}", editar_fornecedor, methods=["PUT"]),
+    Route("/api/fornecedores/{id}", deletar_fornecedor, methods=["DELETE"]),
+    # Configuração de Estoque Mínimo
+    Route("/api/estoque-minimo", criar_estoque_minimo, methods=["POST"]),
+    Route("/api/estoque-minimo", listar_estoque_minimo, methods=["GET"]),
+    Route("/api/estoque-minimo/{produto_codigo}", editar_estoque_minimo, methods=["PUT"]),
+    # Histórico e Notificações
+    Route("/api/historico-compras/{produto_codigo}", historico_compras_produto, methods=["GET"]),
+    Route("/api/notificar-fornecedores", notificar_fornecedores, methods=["POST"]),
+    Route("/api/historico-notificacoes", historico_notificacoes, methods=["GET"]),
 ]
 
 app = Starlette(routes=routes)
@@ -1188,6 +1740,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Iniciar scheduler de jobs (notificação diária de fornecedores)
+iniciar_scheduler()
 
 if __name__ == "__main__":
     import uvicorn
