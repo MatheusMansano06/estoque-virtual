@@ -678,17 +678,20 @@ function App() {
           `Produto vinculado e estoque atualizado na Olist.\n` +
           `Novo estoque: ${novoSaldo} unidades`
         )
-        // Limpar apenas a seleção da Olist, mantendo o produto para conferência
-        setProdutoOlistSelecionado({
-          id: '',
-          sku: '',
-          nome: '',
-          preco: 0,
-          estoque_atual: 0,
-          estoque_saldo: 0,
-        })
-        setSugestaoVinculo(null)
-        setProdutoOlistSKU('')
+        // Recarregar dados e voltar para a tela de conferência
+        await loadNotas()
+        await loadDivergencias()
+        // Fechar modal de detalhes e voltar para tela grande de conferência
+        setModalDetalhesNFAberto(false)
+        setNotaDetalheAberta(null)
+        setPagina('conferencia')
+        // Se ainda houver nota, reabrir na tela grande
+        if (notaSelecionada) {
+          setTimeout(() => {
+            setAbaDetalhe('conferencia')
+            setNotaDetalheAberta(notaSelecionada)
+          }, 100)
+        }
         return
       } else {
         alert('⚠️ Produto vinculado, mas falha ao atualizar estoque: ' + (dataEst.error || 'desconhecido'))
