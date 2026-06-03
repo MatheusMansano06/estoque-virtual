@@ -4,6 +4,7 @@ import { ModalDetalhes } from './ModalDetalhes'
 import { ModalDetalhesNota } from './ModalDetalhesNota'
 import { ModalDetalhesNotaFiscal } from './ModalDetalhesNotaFiscal'
 import { baixarMultiplosOuPdfs } from './services/api'
+import BuscadorKit from './components/BuscadorKit'
 
 interface NotaFiscal {
   id: number
@@ -104,6 +105,9 @@ function App() {
   const [sugestaoDispensada, setSugestaoDispensada] = useState(false)
   const [modalVinculosAberto, setModalVinculosAberto] = useState(false)
   const [listaVinculos, setListaVinculos] = useState<any[]>([])
+  // Kit detectado
+  const [kitDetectado, setKitDetectado] = useState<any>(null)
+  const [componentesKit, setComponentesKit] = useState<any[]>([])
   // Tela única: filtro + modal de detalhe com abas
   const [filtroBusca, setFiltroBusca] = useState('')
   const [filtroData, setFiltroData] = useState('')
@@ -495,6 +499,66 @@ function App() {
     })
     setProdutoOlistSKU('')
     setSugestoesSKU([])
+  }
+
+  const handleVincularKit = async (kit: any, componentes: any[]) => {
+    if (!produtoSelecionado) {
+      alert('❌ Erro: nenhum produto selecionado')
+      return
+    }
+
+    const itemId = (produtoSelecionado as any).id ?? (produtoSelecionado as any).id_item
+    if (!itemId) {
+      alert('❌ Erro: item sem identificador')
+      return
+    }
+
+    const qtdNF = Math.round(produtoSelecionado.quantidade_nf)
+    const mensagem = `Confirmar vinculação do KIT?\n\n` +
+      `Kit: ${kit.nome_kit}\n` +
+      `SKU: ${kit.sku_kit}\n` +
+      `Componentes: ${componentes.length}\n\n` +
+      `Cada componente será atualizado com: +${qtdNF} unidades\n\n` +
+      `Deseja continuar?`
+
+    if (!window.confirm(mensagem)) return
+
+    try {
+      // Vincular kit + atualizar estoque de cada componente
+      const res = await fetch('http://localhost:8000/api/olist/kits/vincular-com-componentes', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          item_id: itemId,
+          sku_kit: kit.sku_kit,
+          componentes: componentes
+        })
+      })
+
+      const data = await res.json()
+      if (res.ok && data.sucesso) {
+        const sucessos = data.resultados_componentes.filter((r: any) => r.sucesso).length
+        const falhas = data.resultados_componentes.filter((r: any) => !r.sucesso).length
+
+        alert(
+          `✅ Kit vinculado com sucesso!\n\n` +
+          `Kit: ${kit.nome_kit}\n` +
+          `Componentes atualizados: ${sucessos}\n` +
+          ${falhas > 0 ? `Falhas: ${falhas}\n\n` : ''} +
+          `Estoque de cada componente: +${qtdNF} un`
+        )
+
+        await loadNotas()
+        await loadDivergencias()
+        setKitDetectado(null)
+        setComponentesKit([])
+        voltarParaInicial()
+      } else {
+        alert('❌ Erro ao vincular kit: ' + (data.erro || 'desconhecido'))
+      }
+    } catch (err) {
+      alert('❌ Erro: ' + err)
+    }
   }
 
   const handleVincular = async () => {
@@ -2166,6 +2230,91 @@ function App() {
                     }}
                   >
                     Não, buscar outro
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* BUSCADOR DE KITS */}
+            {!kitDetectado && !produtoOlistSelecionado.sku && (
+              <BuscadorKit
+                itemId={(produtoSelecionado as any)?.id ?? (produtoSelecionado as any)?.id_item}
+                onKitDetectado={(kit, componentes) => {
+                  setKitDetectado(kit)
+                  setComponentesKit(componentes)
+                }}
+                onSemKit={() => {
+                  // Kit não encontrado, usuário pode buscar um SKU normal
+                }}
+              />
+            )}
+
+            {/* KIT DETECTADO - Opções de ação */}
+            {kitDetectado && componentesKit.length > 0 && (
+              <div style={{
+                background: '#e8f5e9',
+                border: '3px solid #4caf50',
+                padding: '1.5rem',
+                borderRadius: '8px',
+                marginBottom: '1.5rem'
+              }}>
+                <h3 style={{ color: '#2e7d32', marginTop: 0 }}>🎁 Kit Detectado!</h3>
+                <p style={{ color: '#1b5e20', fontSize: '0.95rem', margin: '0 0 1rem' }}>
+                  <strong>{kitDetectado.nome_kit}</strong> ({componentesKit.length} componentes)
+                </p>
+
+                <div style={{
+                  background: '#f1f8e9',
+                  padding: '1rem',
+                  borderRadius: '6px',
+                  marginBottom: '1rem',
+                  fontSize: '0.85rem',
+                  color: '#558b2f'
+                }}>
+                  <p style={{ margin: '0 0 0.5rem' }}>Componentes que serão atualizados:</p>
+                  <ul style={{ margin: '0', paddingLeft: '1.25rem' }}>
+                    {componentesKit.map((comp) => (
+                      <li key={comp.sku} style={{ margin: '0.25rem 0' }}>
+                        <strong>{comp.sku}</strong> - {comp.olist_nome}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+
+                <div style={{ display: 'flex', gap: '0.75rem' }}>
+                  <button
+                    onClick={() => handleVincularKit(kitDetectado, componentesKit)}
+                    style={{
+                      padding: '0.7rem 1.5rem',
+                      background: '#4caf50',
+                      color: 'white',
+                      border: 'none',
+                      borderRadius: '6px',
+                      fontWeight: 700,
+                      cursor: 'pointer',
+                      fontSize: '0.9rem'
+                    }}
+                  >
+                    ✓ Vincular Kit e Atualizar Estoque
+                  </button>
+                  <button
+                    onClick={() => {
+                      setKitDetectado(null)
+                      setComponentesKit([])
+                      setProdutoOlistSKU('')
+                    }}
+                    style={{
+                      padding: '0.7rem 1.5rem',
+                      background: '#f0f0f0',
+                      color: '#1a1a1a',
+                      border: '1px solid #ddd',
+                      borderRadius: '6px',
+                      fontWeight: 600,
+                      cursor: 'pointer',
+                      fontSize: '0.9rem'
+                    }}
+                  >
+                    ← Buscar outro
                   </button>
                 </div>
               </div>
