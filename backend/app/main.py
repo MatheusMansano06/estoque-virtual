@@ -15,7 +15,7 @@ from dotenv import load_dotenv
 from difflib import SequenceMatcher
 import io
 
-from app.models import NotaFiscal, ItemEstoque, ConfirmacaoEstoque, StatusEstoque, VinculoOlist
+from app.models import NotaFiscal, ItemEstoque, ConfirmacaoEstoque, StatusEstoque, VinculoOlist, KitOlist
 from app.utils.nfe_parser import NFeParsing
 from app.utils.nfe_pdf_generator import NFePDFGenerator
 from app.integracoes_olist import olist
@@ -1145,6 +1145,243 @@ async def olist_callback(request: Request):
         """, status_code=500)
 
 
+# ===== ENDPOINTS DE KITS =====
+
+async def verificar_kit(request: Request):
+    """Verifica se um SKU é um kit e retorna seus componentes"""
+    db = SessionLocal()
+    try:
+        sku = request.query_params.get("sku", "").strip().upper()
+        if not sku:
+            return JSONResponse({"erro": "SKU não informado"}, status_code=400)
+
+        kit = db.query(KitOlist).filter(
+            KitOlist.sku_kit == sku,
+            KitOlist.ativo == 1
+        ).first()
+
+        if not kit:
+            return JSONResponse({
+                "eh_kit": False,
+                "sku": sku
+            })
+
+        # Parsear os SKUs dos componentes
+        skus_componentes = [s.strip() for s in kit.skus_componentes.split("|")]
+
+        return JSONResponse({
+            "eh_kit": True,
+            "sku_kit": kit.sku_kit,
+            "nome_kit": kit.nome_kit,
+            "skus_componentes": skus_componentes,
+            "quantidade_componentes": kit.quantidade_componentes,
+            "id_kit": kit.id
+        })
+    finally:
+        db.close()
+
+
+async def listar_kits(request: Request):
+    """Lista todos os kits cadastrados"""
+    db = SessionLocal()
+    try:
+        kits = db.query(KitOlist).filter(KitOlist.ativo == 1).all()
+        return JSONResponse({
+            "total": len(kits),
+            "kits": [{
+                "id": k.id,
+                "sku_kit": k.sku_kit,
+                "nome_kit": k.nome_kit,
+                "skus_componentes": k.skus_componentes.split("|"),
+                "quantidade_componentes": k.quantidade_componentes,
+                "criado_em": k.criado_em.isoformat()
+            } for k in kits]
+        })
+    finally:
+        db.close()
+
+
+async def criar_kit(request: Request):
+    """Cria um novo kit"""
+    db = SessionLocal()
+    try:
+        data = await request.json()
+        sku_kit = data.get("sku_kit", "").strip().upper()
+        nome_kit = data.get("nome_kit", "")
+        skus_componentes = data.get("skus_componentes", [])  # Lista de SKUs
+
+        if not sku_kit or not skus_componentes:
+            return JSONResponse(
+                {"erro": "sku_kit e skus_componentes são obrigatórios"},
+                status_code=400
+            )
+
+        # Verificar se já existe
+        existe = db.query(KitOlist).filter(KitOlist.sku_kit == sku_kit).first()
+        if existe:
+            return JSONResponse(
+                {"erro": f"Kit {sku_kit} já existe"},
+                status_code=400
+            )
+
+        # Criar kit
+        skus_str = "|".join([s.strip().upper() for s in skus_componentes])
+        novo_kit = KitOlist(
+            sku_kit=sku_kit,
+            nome_kit=nome_kit,
+            skus_componentes=skus_str,
+            quantidade_componentes=len(skus_componentes),
+            ativo=1
+        )
+        db.add(novo_kit)
+        db.commit()
+
+        return JSONResponse({
+            "sucesso": True,
+            "mensagem": f"Kit {sku_kit} criado com sucesso",
+            "kit_id": novo_kit.id
+        })
+    except Exception as e:
+        db.rollback()
+        return JSONResponse({"erro": str(e)}, status_code=500)
+    finally:
+        db.close()
+
+
+async def atualizar_kit(request: Request):
+    """Atualiza um kit existente"""
+    db = SessionLocal()
+    try:
+        data = await request.json()
+        kit_id = data.get("id")
+        nome_kit = data.get("nome_kit")
+        skus_componentes = data.get("skus_componentes")
+
+        kit = db.query(KitOlist).filter(KitOlist.id == kit_id).first()
+        if not kit:
+            return JSONResponse({"erro": "Kit não encontrado"}, status_code=404)
+
+        if nome_kit:
+            kit.nome_kit = nome_kit
+        if skus_componentes:
+            skus_str = "|".join([s.strip().upper() for s in skus_componentes])
+            kit.skus_componentes = skus_str
+            kit.quantidade_componentes = len(skus_componentes)
+
+        kit.atualizado_em = datetime.utcnow()
+        db.commit()
+
+        return JSONResponse({
+            "sucesso": True,
+            "mensagem": f"Kit atualizado com sucesso"
+        })
+    except Exception as e:
+        db.rollback()
+        return JSONResponse({"erro": str(e)}, status_code=500)
+    finally:
+        db.close()
+
+
+async def deletar_kit(request: Request):
+    """Deleta (inativa) um kit"""
+    db = SessionLocal()
+    try:
+        data = await request.json()
+        kit_id = data.get("id")
+
+        kit = db.query(KitOlist).filter(KitOlist.id == kit_id).first()
+        if not kit:
+            return JSONResponse({"erro": "Kit não encontrado"}, status_code=404)
+
+        kit.ativo = 0
+        kit.atualizado_em = datetime.utcnow()
+        db.commit()
+
+        return JSONResponse({
+            "sucesso": True,
+            "mensagem": f"Kit deletado"
+        })
+    except Exception as e:
+        db.rollback()
+        return JSONResponse({"erro": str(e)}, status_code=500)
+    finally:
+        db.close()
+
+
+async def vincular_kit_com_componentes(request: Request):
+    """
+    Vincula um item com um kit e seus componentes.
+    Atualiza estoque para CADA componente do kit na Olist.
+    """
+    db = SessionLocal()
+    try:
+        data = await request.json()
+        item_id = data.get("item_id")
+        sku_kit = data.get("sku_kit", "").strip().upper()
+
+        # Componentes: [{"sku": "V+RL3REPARO", "olist_produto_id": "123", "olist_nome": "...", "olist_preco": 50}, ...]
+        componentes = data.get("componentes", [])
+
+        if not item_id or not sku_kit or not componentes:
+            return JSONResponse(
+                {"erro": "item_id, sku_kit e componentes são obrigatórios"},
+                status_code=400
+            )
+
+        item = db.query(ItemEstoque).filter(ItemEstoque.id == item_id).first()
+        if not item:
+            return JSONResponse({"erro": "Item não encontrado"}, status_code=404)
+
+        # Vincular o item ao kit (armazenar como referência)
+        item.olist_sku = sku_kit  # SKU do kit
+        item.olist_nome = f"KIT: {sku_kit}"  # Marcar como kit
+        item.vinculado_em = datetime.utcnow()
+
+        # Para cada componente, atualizar estoque na Olist
+        resultados = []
+        for comp in componentes:
+            sku_comp = comp.get("sku", "").strip().upper()
+            olist_produto_id = comp.get("olist_produto_id")
+            olist_nome = comp.get("olist_nome", "")
+            olist_preco = float(comp.get("olist_preco", 0) or 0)
+            quantidade = float(item.quantidade_nf or 1)
+
+            try:
+                # Atualizar estoque do componente na Olist
+                resultado_estoque = olist.atualizar_estoque(
+                    sku=sku_comp,
+                    quantidade=int(quantidade)
+                )
+
+                resultados.append({
+                    "sku": sku_comp,
+                    "sucesso": True,
+                    "quantidade_atualizada": int(quantidade)
+                })
+
+            except Exception as e:
+                resultados.append({
+                    "sku": sku_comp,
+                    "sucesso": False,
+                    "erro": str(e)
+                })
+
+        db.commit()
+
+        return JSONResponse({
+            "sucesso": True,
+            "mensagem": f"Kit {sku_kit} vinculado com sucesso",
+            "item_id": item_id,
+            "resultados_componentes": resultados
+        })
+
+    except Exception as e:
+        db.rollback()
+        return JSONResponse({"erro": str(e)}, status_code=500)
+    finally:
+        db.close()
+
+
 routes = [
     Route("/", root, methods=["GET"]),
     Route("/api/upload-nfe", upload_nfe, methods=["POST"]),
@@ -1176,6 +1413,13 @@ routes = [
     Route("/api/olist/sugestao-vinculo", olist_sugestao_vinculo, methods=["GET"]),
     Route("/api/olist/vinculos", olist_listar_vinculos, methods=["GET"]),
     Route("/api/olist/vinculos/deletar", olist_deletar_vinculo, methods=["POST"]),
+    # Kits (produtos compostos)
+    Route("/api/olist/kits/verificar", verificar_kit, methods=["GET"]),
+    Route("/api/olist/kits", listar_kits, methods=["GET"]),
+    Route("/api/olist/kits/criar", criar_kit, methods=["POST"]),
+    Route("/api/olist/kits/atualizar", atualizar_kit, methods=["POST"]),
+    Route("/api/olist/kits/deletar", deletar_kit, methods=["POST"]),
+    Route("/api/olist/kits/vincular-com-componentes", vincular_kit_com_componentes, methods=["POST"]),
 ]
 
 app = Starlette(routes=routes)

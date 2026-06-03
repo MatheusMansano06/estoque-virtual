@@ -100,3 +100,22 @@ class VinculoOlist(Base):
     vezes_usado = Column(Integer, default=1)
     criado_em = Column(DateTime, default=datetime.utcnow)
     atualizado_em = Column(DateTime, default=datetime.utcnow)
+
+
+class KitOlist(Base):
+    """
+    Configuração de kits: armazena qual SKU é um kit e quais SKUs compõem ele.
+    Exemplo: V+RL3 é um kit composto por [V+RL3REPARO, V+RL3V]
+    """
+    __tablename__ = "kits_olist"
+
+    id = Column(Integer, primary_key=True)
+    # SKU do kit (ex: V+RL3)
+    sku_kit = Column(String(100), unique=True, index=True)
+    nome_kit = Column(String(255))  # Nome descritivo do kit
+    # SKUs dos componentes separados por | (ex: "V+RL3REPARO|V+RL3V")
+    skus_componentes = Column(String(500))  # Armazenar como string separada por |
+    quantidade_componentes = Column(Integer)  # Quantos itens compõem o kit
+    ativo = Column(Integer, default=1)  # 1=ativo, 0=inativo
+    criado_em = Column(DateTime, default=datetime.utcnow)
+    atualizado_em = Column(DateTime, default=datetime.utcnow)
