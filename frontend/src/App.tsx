@@ -678,15 +678,18 @@ function App() {
           `Produto vinculado e estoque atualizado na Olist.\n` +
           `Novo estoque: ${novoSaldo} unidades`
         )
-        // Recarregar dados para a barra de progresso refletir a subida
-        await loadNotas()
-        await loadDivergencias()
-        // Atualizar a nota selecionada com os dados mais recentes
-        if (notaSelecionada) {
-          const resAtual = await fetch(`http://localhost:8000/api/notas-fiscais/${notaSelecionada.id}`)
-          const notaAtualizada = await resAtual.json()
-          setNotaSelecionada(notaAtualizada)
-        }
+        // Limpar seleção para próximo produto
+        setProdutoSelecionado(null)
+        setProdutoOlistSelecionado({
+          id: '',
+          sku: '',
+          nome: '',
+          preco: 0,
+          estoque_atual: 0,
+          estoque_saldo: 0,
+        })
+        setSugestaoVinculo(null)
+        setProdutoOlistSKU('')
       } else {
         alert('⚠️ Produto vinculado, mas falha ao atualizar estoque: ' + (dataEst.error || 'desconhecido'))
       }
