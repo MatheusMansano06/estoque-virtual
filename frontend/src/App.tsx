@@ -678,19 +678,16 @@ function App() {
           `Produto vinculado e estoque atualizado na Olist.\n` +
           `Novo estoque: ${novoSaldo} unidades`
         )
-        // Recarregar dados e voltar para a tela de conferência
+        // Recarregar dados
         await loadNotas()
         await loadDivergencias()
-        // Fechar modal de detalhes e voltar para tela grande de conferência
+        // Voltar para HOME com o modal da nota aberto na aba de conferência
+        setPagina('inicial')
         setModalDetalhesNFAberto(false)
-        setNotaDetalheAberta(null)
-        setPagina('conferencia')
-        // Se ainda houver nota, reabrir na tela grande
+        setAbaDetalhe('conferencia')
+        // Manter a nota selecionada para abrir o modal
         if (notaSelecionada) {
-          setTimeout(() => {
-            setAbaDetalhe('conferencia')
-            setNotaDetalheAberta(notaSelecionada)
-          }, 100)
+          setNotaDetalheAberta(notaSelecionada)
         }
         return
       } else {
