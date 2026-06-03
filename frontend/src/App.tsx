@@ -540,11 +540,12 @@ function App() {
         const sucessos = data.resultados_componentes.filter((r: any) => r.sucesso).length
         const falhas = data.resultados_componentes.filter((r: any) => !r.sucesso).length
 
+        const falhaMsg = falhas > 0 ? `Falhas: ${falhas}\n\n` : ''
         alert(
           `✅ Kit vinculado com sucesso!\n\n` +
           `Kit: ${kit.nome_kit}\n` +
           `Componentes atualizados: ${sucessos}\n` +
-          ${falhas > 0 ? `Falhas: ${falhas}\n\n` : ''} +
+          falhaMsg +
           `Estoque de cada componente: +${qtdNF} un`
         )
 
