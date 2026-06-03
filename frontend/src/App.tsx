@@ -837,38 +837,6 @@ function App() {
           <div className="container">
             <h1>ESTOQUE VIRTUAL</h1>
             <p>Sistema de Inventário via Nota Fiscal Eletrônica</p>
-            <div style={{ marginTop: '1rem', display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
-              <button
-                onClick={() => setPagina('inicial')}
-                style={{
-                  padding: '0.6rem 1.2rem',
-                  backgroundColor: '#1976d2',
-                  color: 'white',
-                  border: 'none',
-                  borderRadius: '4px',
-                  cursor: 'pointer',
-                  fontWeight: 'bold',
-                  fontSize: '0.9rem'
-                }}
-              >
-                📦 Notas Fiscais
-              </button>
-              <button
-                onClick={() => setPagina('fornecedores')}
-                style={{
-                  padding: '0.6rem 1.2rem',
-                  backgroundColor: '#757575',
-                  color: 'white',
-                  border: 'none',
-                  borderRadius: '4px',
-                  cursor: 'pointer',
-                  fontWeight: 'bold',
-                  fontSize: '0.9rem'
-                }}
-              >
-                🏢 Fornecedores
-              </button>
-            </div>
           </div>
         </header>
 
