@@ -219,92 +219,134 @@ class OlistIntegration:
     # ========== OPERACOES NA API ==========
 
     def listar_todos_produtos(self, limite: int = 100) -> List[Dict]:
-        """Lista todos os produtos da Olist (com limite)"""
-        # Priorizar token simples
-        token = self.token_v2
-        if not token:
-            token = self.get_access_token()
-            if not token:
-                return []
+        """Lista todos os produtos - com múltiplas estratégias"""
+        resultado = []
 
-        try:
-            # Token como header Bearer (método correto para API v3)
-            url = f"{self.API_BASE}/produtos?pageSize={limite}"
-            print(f"[OLIST] Listando produtos...")
-            headers = {"Accept": "application/json", "Authorization": f"Bearer {token}"}
-            req = urllib.request.Request(url, headers=headers, method="GET")
+        print(f"[OLIST] Tentando listar {limite} produtos...")
 
-            with urllib.request.urlopen(req, timeout=15) as response:
-                resposta = json.loads(response.read().decode("utf-8"))
-                produtos = resposta.get("itens") or resposta.get("data") or resposta.get("results") or (resposta if isinstance(resposta, list) else [])
+        # ESTRATÉGIA 1: Usar token simples (v2 legacy)
+        if self.token_v2:
+            print(f"[OLIST] Tentativa 1: API v2 com token simples...")
+            try:
+                # Tiny API v2 - formato diferente
+                url = f"https://api.tiny.com.br/v2/produtos.json?token={self.token_v2}&formato=json"
+                headers = {"Accept": "application/json"}
+                req = urllib.request.Request(url, headers=headers, method="GET")
 
-                resultado = []
-                for prod in produtos:
-                    resultado.append({
-                        "id": prod.get("id", ""),
-                        "sku": prod.get("sku") or prod.get("codigo", ""),
-                        "nome": prod.get("descricao") or prod.get("nome", ""),
-                        "preco": float(prod.get("precos", {}).get("preco", 0) if isinstance(prod.get("precos"), dict) else prod.get("preco", 0) or 0),
-                    })
+                with urllib.request.urlopen(req, timeout=15) as response:
+                    resposta = json.loads(response.read().decode("utf-8"))
 
-                print(f"[OLIST] {len(resultado)} produto(s) listados")
-                return resultado
-        except Exception as e:
-            print(f"[OLIST] Erro ao listar produtos: {e}")
-            return []
+                    # API v2 retorna {"retorno": {"produtos": [...]}}
+                    if "retorno" in resposta:
+                        produtos = resposta["retorno"].get("produtos", [])
+                        print(f"[OLIST] API v2 retornou {len(produtos)} produtos")
+
+                        for prod in produtos[:limite]:
+                            resultado.append({
+                                "id": prod.get("id", ""),
+                                "sku": prod.get("codigo", ""),
+                                "nome": prod.get("nome", ""),
+                                "preco": float(prod.get("preco", 0) or 0),
+                                "codigo_produto": prod.get("codigo", ""),
+                            })
+
+                        if resultado:
+                            print(f"[OLIST] ✓ {len(resultado)} produtos formatados")
+                            return resultado
+            except Exception as e:
+                print(f"[OLIST] API v2 falhou: {e}")
+
+        # ESTRATÉGIA 2: Usar OAuth2 token
+        token = self.get_access_token()
+        if token and not resultado:
+            print(f"[OLIST] Tentativa 2: API v3 com OAuth2...")
+            try:
+                url = f"{self.API_BASE}/produtos?pageSize={limite}"
+                headers = {"Accept": "application/json", "Authorization": f"Bearer {token}"}
+                req = urllib.request.Request(url, headers=headers, method="GET")
+
+                with urllib.request.urlopen(req, timeout=15) as response:
+                    resposta = json.loads(response.read().decode("utf-8"))
+                    produtos = resposta.get("itens") or resposta.get("data") or resposta.get("results") or (resposta if isinstance(resposta, list) else [])
+
+                    print(f"[OLIST] API v3 retornou {len(produtos)} produtos")
+
+                    for prod in produtos[:limite]:
+                        resultado.append({
+                            "id": prod.get("id", ""),
+                            "sku": prod.get("sku", ""),
+                            "nome": prod.get("descricao") or prod.get("nome", ""),
+                            "preco": float(prod.get("precos", {}).get("preco", 0) if isinstance(prod.get("precos"), dict) else prod.get("preco", 0) or 0),
+                            "codigo_produto": prod.get("sku", ""),
+                        })
+
+                    if resultado:
+                        print(f"[OLIST] ✓ {len(resultado)} produtos formatados")
+                        return resultado
+            except Exception as e:
+                print(f"[OLIST] API v3 falhou: {e}")
+
+        print(f"[OLIST] ✗ Nenhum produto listado (nenhuma estratégia funcionou)")
+        return resultado
 
     def buscar_produtos(self, termo: str) -> List[Dict]:
-        """Busca produtos na API v3 com fallback para busca local/manual"""
+        """Busca produtos com múltiplas estratégias para garantir resultado"""
         if not termo or len(termo) < 1:
             return []
-
-        # Priorizar token simples, depois tentar OAuth2
-        token = self.token_v2
-        if not token:
-            token = self.get_access_token()
-            if not token:
-                print("[OLIST] Token nao disponivel")
-                return []
 
         termo_lower = termo.lower().strip()
         resultado = []
 
-        # Estratégia 1: Tentar API v3
-        print(f"[OLIST] Buscando por: {termo}")
-        for campo in ["sku", "codigo", "nome"]:
-            resultado = self._buscar_por_campo(token, campo, termo)
-            if resultado:
-                print(f"[OLIST] Encontrado via {campo}: {len(resultado)} resultado(s)")
-                break
+        print(f"[OLIST] === BUSCANDO: {termo} ===")
 
-        # Estratégia 2: Se API não retornar, listar todos e filtrar
-        if not resultado:
-            print(f"[OLIST] Listando todos produtos para busca local...")
-            try:
-                todos = self.listar_todos_produtos(limite=500)
+        # ESTRATÉGIA 1: Listar TODOS os produtos e fazer busca local
+        print(f"[OLIST] Estratégia 1: Listar todos produtos...")
+        try:
+            todos = self.listar_todos_produtos(limite=1000)
+            print(f"[OLIST] Total de produtos listados: {len(todos)}")
+
+            if todos:
+                # Buscar por SKU, nome ou código
                 resultado = [
                     p for p in todos
                     if termo_lower in p.get('nome', '').lower()
                     or termo_lower in p.get('sku', '').lower()
                     or termo_lower in p.get('codigo_produto', '').lower()
                 ]
+
                 if resultado:
-                    print(f"[OLIST] Encontrado {len(resultado)} via busca local")
-            except Exception as e:
-                print(f"[OLIST] Erro na busca local: {e}")
+                    print(f"[OLIST] ✓ Encontrado {len(resultado)} produto(s) via busca local")
+        except Exception as e:
+            print(f"[OLIST] Erro na estratégia 1: {e}")
 
-        # Enriquecer com estoque
-        for prod in resultado:
-            try:
-                if prod.get("id"):
-                    estoque = self.obter_estoque(str(prod["id"]))
-                    if estoque:
-                        prod["estoque_atual"] = estoque.get("disponivel", 0)
-                        prod["estoque_saldo"] = estoque.get("saldo", 0)
-                        prod["estoque_reservado"] = estoque.get("reservado", 0)
-            except:
-                prod["estoque_atual"] = 0
+        # ESTRATÉGIA 2: Se não encontrou, tentar API diretamente
+        if not resultado:
+            print(f"[OLIST] Estratégia 2: Tentar busca via API...")
+            token = self.token_v2 or self.get_access_token()
+            if token:
+                for campo in ["sku", "nome"]:
+                    try:
+                        resultado = self._buscar_por_campo(token, campo, termo)
+                        if resultado:
+                            print(f"[OLIST] Encontrado via API {campo}: {len(resultado)}")
+                            break
+                    except Exception as e:
+                        print(f"[OLIST] Erro busca API {campo}: {e}")
 
+        # Enriquecer com estoque se houver resultados
+        if resultado:
+            for prod in resultado[:50]:  # Limitar a 50 para não sobrecarregar
+                try:
+                    if prod.get("id"):
+                        estoque = self.obter_estoque(str(prod["id"]))
+                        if estoque:
+                            prod["estoque_atual"] = estoque.get("disponivel", 0)
+                            prod["estoque_saldo"] = estoque.get("saldo", 0)
+                            prod["estoque_reservado"] = estoque.get("reservado", 0)
+                except:
+                    prod["estoque_atual"] = 0
+
+        print(f"[OLIST] === FIM DA BUSCA: {len(resultado)} resultados ===")
         return resultado
 
     def obter_detalhes_completo(self, produto_id: str) -> Optional[Dict]:
