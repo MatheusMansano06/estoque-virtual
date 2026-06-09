@@ -218,41 +218,58 @@ class OlistIntegration:
 
     # ========== OPERACOES NA API ==========
 
-    def listar_todos_produtos(self, limite: int = 100) -> List[Dict]:
-        """Lista todos os produtos - PRIORIZA OAuth2 (token v2 pode estar expirado)"""
+    def listar_todos_produtos(self, limite: int = 2000) -> List[Dict]:
+        """Lista TODOS os produtos com paginação (suporta 1000+)"""
         resultado = []
+        pagina = 1
+        total_recuperado = 0
+        MAX_PAGES = 10  # Máximo 10 páginas = 2000 produtos
 
-        print(f"[OLIST] === Listando {limite} produtos ===")
+        print(f"[OLIST] === Listando TODOS produtos (até {limite}) ===")
 
         # ESTRATÉGIA 1: Usar OAuth2 token (PRIORIDADE MÁXIMA - é sempre válido)
         token = self.get_access_token()
         if token:
-            print(f"[OLIST] Usando OAuth2 token (prioridade)...")
+            print(f"[OLIST] Usando OAuth2 com paginação...")
             try:
-                url = f"{self.API_BASE}/produtos?pageSize={limite}"
-                headers = {"Accept": "application/json", "Authorization": f"Bearer {token}"}
-                req = urllib.request.Request(url, headers=headers, method="GET")
+                while pagina <= MAX_PAGES and total_recuperado < limite:
+                    page_size = min(200, limite - total_recuperado)  # 200 por página
+                    url = f"{self.API_BASE}/produtos?pageSize={page_size}&page={pagina}"
 
-                with urllib.request.urlopen(req, timeout=15) as response:
-                    resposta = json.loads(response.read().decode("utf-8"))
-                    print(f"[OLIST] Resposta completa: {json.dumps(resposta)[:200]}...")
+                    print(f"[OLIST] Página {pagina}, recuperados: {total_recuperado}")
 
-                    produtos = resposta.get("itens") or resposta.get("data") or resposta.get("results") or (resposta if isinstance(resposta, list) else [])
+                    headers = {"Accept": "application/json", "Authorization": f"Bearer {token}"}
+                    req = urllib.request.Request(url, headers=headers, method="GET")
 
-                    print(f"[OLIST] OAuth2: Encontrados {len(produtos)} produtos")
+                    with urllib.request.urlopen(req, timeout=15) as response:
+                        resposta = json.loads(response.read().decode("utf-8"))
 
-                    for prod in produtos[:limite]:
-                        resultado.append({
-                            "id": prod.get("id", ""),
-                            "sku": prod.get("sku", ""),
-                            "nome": prod.get("descricao") or prod.get("nome", ""),
-                            "preco": float(prod.get("precos", {}).get("preco", 0) if isinstance(prod.get("precos"), dict) else prod.get("preco", 0) or 0),
-                            "codigo_produto": prod.get("sku", ""),
-                        })
+                        produtos = resposta.get("itens") or resposta.get("data") or resposta.get("results") or (resposta if isinstance(resposta, list) else [])
 
-                    if resultado:
-                        print(f"[OLIST] OK: {len(resultado)} produtos retornados via OAuth2")
-                        return resultado
+                        if not produtos:
+                            print(f"[OLIST] Fim da paginação: página {pagina} vazia")
+                            break
+
+                        print(f"[OLIST] Página {pagina}: {len(produtos)} produtos")
+
+                        for prod in produtos:
+                            resultado.append({
+                                "id": prod.get("id", ""),
+                                "sku": prod.get("sku", ""),
+                                "nome": prod.get("descricao") or prod.get("nome", ""),
+                                "preco": float(prod.get("precos", {}).get("preco", 0) if isinstance(prod.get("precos"), dict) else prod.get("preco", 0) or 0),
+                                "codigo_produto": prod.get("sku", ""),
+                            })
+                            total_recuperado += 1
+
+                        pagina += 1
+
+                    if total_recuperado >= limite:
+                        break
+
+                if resultado:
+                    print(f"[OLIST] OK: {len(resultado)} produtos retornados (total: {total_recuperado})")
+                    return resultado
             except Exception as e:
                 print(f"[OLIST] OAuth2 falhou: {e}")
 
@@ -299,10 +316,10 @@ class OlistIntegration:
 
         print(f"[OLIST] === BUSCANDO: {termo} ===")
 
-        # ESTRATÉGIA 1: Listar TODOS os produtos e fazer busca local
-        print(f"[OLIST] Estratégia 1: Listar todos produtos...")
+        # ESTRATÉGIA 1: Listar TODOS os produtos (1196+) e fazer busca local
+        print(f"[OLIST] Estratégia 1: Listar todos 1196+ produtos...")
         try:
-            todos = self.listar_todos_produtos(limite=1000)
+            todos = self.listar_todos_produtos(limite=2000)
             print(f"[OLIST] Total de produtos listados: {len(todos)}")
 
             if todos:
@@ -315,7 +332,7 @@ class OlistIntegration:
                 ]
 
                 if resultado:
-                    print(f"[OLIST] ✓ Encontrado {len(resultado)} produto(s) via busca local")
+                    print(f"[OLIST] OK: Encontrado {len(resultado)} produto(s) via busca local")
         except Exception as e:
             print(f"[OLIST] Erro na estratégia 1: {e}")
 
