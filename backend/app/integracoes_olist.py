@@ -219,47 +219,15 @@ class OlistIntegration:
     # ========== OPERACOES NA API ==========
 
     def listar_todos_produtos(self, limite: int = 100) -> List[Dict]:
-        """Lista todos os produtos - com múltiplas estratégias"""
+        """Lista todos os produtos - PRIORIZA OAuth2 (token v2 pode estar expirado)"""
         resultado = []
 
-        print(f"[OLIST] Tentando listar {limite} produtos...")
+        print(f"[OLIST] === Listando {limite} produtos ===")
 
-        # ESTRATÉGIA 1: Usar token simples (v2 legacy)
-        if self.token_v2:
-            print(f"[OLIST] Tentativa 1: API v2 com token simples...")
-            try:
-                # Tiny API v2 - formato diferente
-                url = f"https://api.tiny.com.br/v2/produtos.json?token={self.token_v2}&formato=json"
-                headers = {"Accept": "application/json"}
-                req = urllib.request.Request(url, headers=headers, method="GET")
-
-                with urllib.request.urlopen(req, timeout=15) as response:
-                    resposta = json.loads(response.read().decode("utf-8"))
-
-                    # API v2 retorna {"retorno": {"produtos": [...]}}
-                    if "retorno" in resposta:
-                        produtos = resposta["retorno"].get("produtos", [])
-                        print(f"[OLIST] API v2 retornou {len(produtos)} produtos")
-
-                        for prod in produtos[:limite]:
-                            resultado.append({
-                                "id": prod.get("id", ""),
-                                "sku": prod.get("codigo", ""),
-                                "nome": prod.get("nome", ""),
-                                "preco": float(prod.get("preco", 0) or 0),
-                                "codigo_produto": prod.get("codigo", ""),
-                            })
-
-                        if resultado:
-                            print(f"[OLIST] ✓ {len(resultado)} produtos formatados")
-                            return resultado
-            except Exception as e:
-                print(f"[OLIST] API v2 falhou: {e}")
-
-        # ESTRATÉGIA 2: Usar OAuth2 token
+        # ESTRATÉGIA 1: Usar OAuth2 token (PRIORIDADE MÁXIMA - é sempre válido)
         token = self.get_access_token()
-        if token and not resultado:
-            print(f"[OLIST] Tentativa 2: API v3 com OAuth2...")
+        if token:
+            print(f"[OLIST] Usando OAuth2 token (prioridade)...")
             try:
                 url = f"{self.API_BASE}/produtos?pageSize={limite}"
                 headers = {"Accept": "application/json", "Authorization": f"Bearer {token}"}
@@ -267,9 +235,11 @@ class OlistIntegration:
 
                 with urllib.request.urlopen(req, timeout=15) as response:
                     resposta = json.loads(response.read().decode("utf-8"))
+                    print(f"[OLIST] Resposta completa: {json.dumps(resposta)[:200]}...")
+
                     produtos = resposta.get("itens") or resposta.get("data") or resposta.get("results") or (resposta if isinstance(resposta, list) else [])
 
-                    print(f"[OLIST] API v3 retornou {len(produtos)} produtos")
+                    print(f"[OLIST] OAuth2: Encontrados {len(produtos)} produtos")
 
                     for prod in produtos[:limite]:
                         resultado.append({
@@ -281,12 +251,42 @@ class OlistIntegration:
                         })
 
                     if resultado:
-                        print(f"[OLIST] ✓ {len(resultado)} produtos formatados")
+                        print(f"[OLIST] OK: {len(resultado)} produtos retornados via OAuth2")
                         return resultado
             except Exception as e:
-                print(f"[OLIST] API v3 falhou: {e}")
+                print(f"[OLIST] OAuth2 falhou: {e}")
 
-        print(f"[OLIST] ✗ Nenhum produto listado (nenhuma estratégia funcionou)")
+        # ESTRATÉGIA 2: Fallback para token simples (pode estar expirado)
+        if self.token_v2 and not resultado:
+            print(f"[OLIST] Tentando fallback: API v2 com token simples...")
+            try:
+                url = f"https://api.tiny.com.br/v2/produtos.json?token={self.token_v2}&formato=json"
+                headers = {"Accept": "application/json"}
+                req = urllib.request.Request(url, headers=headers, method="GET")
+
+                with urllib.request.urlopen(req, timeout=15) as response:
+                    resposta = json.loads(response.read().decode("utf-8"))
+
+                    if "retorno" in resposta:
+                        produtos = resposta["retorno"].get("produtos", [])
+                        print(f"[OLIST] API v2 encontrou {len(produtos)} produtos")
+
+                        for prod in produtos[:limite]:
+                            resultado.append({
+                                "id": prod.get("id", ""),
+                                "sku": prod.get("codigo", ""),
+                                "nome": prod.get("nome", ""),
+                                "preco": float(prod.get("preco", 0) or 0),
+                                "codigo_produto": prod.get("codigo", ""),
+                            })
+
+                        if resultado:
+                            print(f"[OLIST] OK: {len(resultado)} produtos retornados via token simples")
+                            return resultado
+            except Exception as e:
+                print(f"[OLIST] Token simples falhou (provavelmente expirado): {e}")
+
+        print(f"[OLIST] ERRO: Nenhum produto listado")
         return resultado
 
     def buscar_produtos(self, termo: str) -> List[Dict]:
