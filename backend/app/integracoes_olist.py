@@ -48,11 +48,13 @@ class OlistIntegration:
     # ========== PERSISTENCIA DE TOKEN ==========
 
     def _salvar_token(self, dados: Dict):
-        """Salva token em arquivo JSON"""
+        """Salva token em arquivo JSON com permissões restritas"""
         try:
             with open(TOKEN_FILE, "w", encoding="utf-8") as f:
                 json.dump(dados, f, indent=2)
-            print("[OLIST] Token salvo com sucesso")
+            # 🔒 SEGURANÇA: Restringir permissões do arquivo (apenas dono pode ler)
+            os.chmod(TOKEN_FILE, 0o600)
+            print("[OLIST] Token salvo com sucesso (permissões restritas)")
         except Exception as e:
             print(f"[OLIST] Erro ao salvar token: {e}")
 
@@ -185,40 +187,51 @@ class OlistIntegration:
         - Carrega do arquivo
         - Renova se expirado
         - Retorna None se nunca foi autorizado
+        Nota: Em caso de falha, retorna None para permitir fallback ao token simples
         """
-        dados = self._carregar_token()
-        if not dados:
+        try:
+            dados = self._carregar_token()
+            if not dados:
+                return None
+
+            # Verificar validade
+            expires_at = dados.get("expires_at")
+            if expires_at:
+                # Renovar 60s antes de expirar
+                if datetime.utcnow() < (datetime.fromisoformat(expires_at) - timedelta(seconds=60)):
+                    return dados["access_token"]
+
+            # Token expirado: tentar renovar
+            refresh_token = dados.get("refresh_token")
+            if refresh_token:
+                novo_token = self._renovar_token(refresh_token)
+                if novo_token:
+                    return novo_token
+                else:
+                    # Falha ao renovar - vai usar fallback
+                    return None
+
             return None
-
-        # Verificar validade
-        expires_at = dados.get("expires_at")
-        if expires_at:
-            # Renovar 60s antes de expirar
-            if datetime.utcnow() < (datetime.fromisoformat(expires_at) - timedelta(seconds=60)):
-                return dados["access_token"]
-
-        # Token expirado: tentar renovar
-        refresh_token = dados.get("refresh_token")
-        if refresh_token:
-            return self._renovar_token(refresh_token)
-
-        return None
+        except Exception as e:
+            print(f"[OLIST] Erro ao obter token: {e}")
+            return None
 
     # ========== OPERACOES NA API ==========
 
     def listar_todos_produtos(self, limite: int = 100) -> List[Dict]:
         """Lista todos os produtos da Olist (com limite)"""
-        token = self.get_access_token()
+        # Priorizar token simples
+        token = self.token_v2
         if not token:
-            token = self.token_v2
+            token = self.get_access_token()
             if not token:
                 return []
 
         try:
-            # Tentar com diferentes parâmetros de paginação
+            # Token como header Bearer (método correto para API v3)
             url = f"{self.API_BASE}/produtos?pageSize={limite}"
-            print(f"[OLIST] Listando produtos: {url}")
-            headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+            print(f"[OLIST] Listando produtos...")
+            headers = {"Accept": "application/json", "Authorization": f"Bearer {token}"}
             req = urllib.request.Request(url, headers=headers, method="GET")
 
             with urllib.request.urlopen(req, timeout=15) as response:
@@ -241,33 +254,35 @@ class OlistIntegration:
             return []
 
     def buscar_produtos(self, termo: str) -> List[Dict]:
-        """Busca produtos na API v3 por codigo (SKU) ou nome"""
+        """Busca produtos na API v3 por codigo (SKU), sku ou nome"""
         if not termo or len(termo) < 1:
             return []
 
-        token = self.get_access_token()
+        # Priorizar token simples, depois tentar OAuth2
+        token = self.token_v2
         if not token:
-            # Fallback para token simples (legado v2)
-            token = self.token_v2
+            token = self.get_access_token()
             if not token:
-                print("[OLIST] Nao autorizado - acesse /api/olist/conectar ou configure OLIST_API_TOKEN_SIMPLE")
+                print("[OLIST] Nao autorizado - configure OLIST_API_TOKEN_SIMPLE")
                 return []
 
-        # Tenta buscar por codigo (SKU) primeiro, depois por nome
+        # Tenta buscar por diferentes campos
         resultado = []
-        for campo in ["codigo", "nome"]:
+        for campo in ["sku", "codigo", "nome"]:
+            print(f"[OLIST] Tentando buscar por {campo}='{termo}'")
             resultado = self._buscar_por_campo(token, campo, termo)
             if resultado:
+                print(f"[OLIST] ✓ Encontrado via {campo}: {len(resultado)} resultado(s)")
                 break
 
         # Se nenhum resultado encontrado via filtro, fazer busca local
         if not resultado:
-            print(f"[OLIST] Nenhum resultado via API, tentando busca local...")
-            todos = self.listar_todos_produtos(limite=500)
-            termo_lower = termo.lower()
-            resultado = [p for p in todos if termo_lower in p.get('nome', '').lower() or termo_lower in p.get('sku', '').lower()]
+            print(f"[OLIST] Nenhum resultado via API filtrada, tentando busca local em todos os produtos...")
+            todos = self.listar_todos_produtos(limite=1000)
+            termo_lower = termo.lower().strip()
+            resultado = [p for p in todos if termo_lower in p.get('nome', '').lower() or termo_lower in p.get('sku', '').lower() or termo_lower in p.get('codigo_produto', '').lower()]
             if resultado:
-                print(f"[OLIST] {len(resultado)} produto(s) encontrado(s) via busca local")
+                print(f"[OLIST] ✓ {len(resultado)} produto(s) encontrado(s) via busca local")
 
         # Enriquecer com estoque real (saldo/disponivel)
         for prod in resultado:
@@ -290,7 +305,7 @@ class OlistIntegration:
 
         try:
             url = f"{self.API_BASE}/produtos/{produto_id}"
-            headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+            headers = {"Accept": "application/json", "Authorization": f"Bearer {token}"}
             req = urllib.request.Request(url, headers=headers, method="GET")
 
             with urllib.request.urlopen(req, timeout=15) as response:
@@ -396,7 +411,7 @@ class OlistIntegration:
 
         try:
             url = f"{self.API_BASE}/estoque/{produto_id}"
-            headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+            headers = {"Accept": "application/json", "Authorization": f"Bearer {token}"}
             req = urllib.request.Request(url, headers=headers, method="GET")
 
             with urllib.request.urlopen(req, timeout=15) as response:
@@ -413,17 +428,26 @@ class OlistIntegration:
     def _buscar_por_campo(self, token: str, campo: str, termo: str) -> List[Dict]:
         """Busca produtos por um campo especifico"""
         try:
-            # Tentar busca com filtro exato primeiro
-            params = {campo: termo, "limit": 50}
+            # Mapear nomes de campos para o que a API espera
+            campo_map = {
+                "sku": "sku",
+                "codigo": "codigo",
+                "nome": "nome",
+                "descricao": "descricao"
+            }
+            campo_api = campo_map.get(campo, campo)
+
+            # Tentar busca com filtro - token como header Bearer
+            params = {campo_api: termo, "limit": 100}
             query = urllib.parse.urlencode(params)
             url = f"{self.API_BASE}/produtos?{query}"
 
             headers = {
-                "Authorization": f"Bearer {token}",
-                "Accept": "application/json"
+                "Accept": "application/json",
+                "Authorization": f"Bearer {token}"
             }
 
-            print(f"[OLIST] Buscando por {campo}='{termo}' em {url}")
+            print(f"[OLIST] GET {url[:100]}...")
             req = urllib.request.Request(url, headers=headers, method="GET")
 
             with urllib.request.urlopen(req, timeout=15) as response:
@@ -450,15 +474,17 @@ class OlistIntegration:
                     })
 
                 if resultado:
-                    print(f"[OLIST] {len(resultado)} produto(s) por '{campo}'='{termo}'")
+                    print(f"[OLIST] ✓ {len(resultado)} resultado(s) encontrado(s)")
+                else:
+                    print(f"[OLIST] ✗ Nenhum resultado para {campo}='{termo}'")
                 return resultado
 
         except urllib.error.HTTPError as e:
             error_body = e.read().decode("utf-8")
-            print(f"[OLIST] Erro HTTP {e.code} buscando por {campo}: {error_body[:200]}")
+            print(f"[OLIST] HTTP {e.code}: {error_body[:150]}")
             return []
         except Exception as e:
-            print(f"[OLIST] Erro buscando por {campo}: {e}")
+            print(f"[OLIST] ✗ Erro: {str(e)[:150]}")
             return []
 
     def atualizar_estoque(self, produto_id: str, quantidade: float,
@@ -485,8 +511,8 @@ class OlistIntegration:
             }
             post_data = json.dumps(data).encode("utf-8")
             headers = {
-                "Authorization": f"Bearer {token}",
-                "Content-Type": "application/json"
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {token}"
             }
             req = urllib.request.Request(url, data=post_data, headers=headers, method="POST")
 

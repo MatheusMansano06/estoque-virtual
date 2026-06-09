@@ -37,6 +37,11 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 # Cache para armazenar access_token da Olist
 olist_access_token_cache = {"token": None, "expires_at": None}
 
+# 📋 Constantes de configuração
+MIN_AUTO_CONFIDENCE = 0.95  # Vincular automaticamente apenas com 95%+ de confiança
+MIN_FUZZY_CONFIDENCE = 0.80  # Sugerir vinculação com 80%+ de confiança
+MAX_PAGINATION_LIMIT = 1000  # Limite máximo de itens por página
+
 def obter_olist_access_token():
     """Obtém access_token da Olist usando OAuth"""
     global olist_access_token_cache
@@ -154,17 +159,25 @@ def auto_buscar_vinculo(db: Session, item: ItemEstoque):
         if vinculo:
             return vinculo, 0.95  # 95% confiança
 
-    # 3) Tenta fuzzy match por descrição (acima de 80%)
+    # 3) Tenta fuzzy match por descrição (acima de MIN_FUZZY_CONFIDENCE)
     if item.descricao:
-        todos_vinculos = db.query(VinculoOlist).all()
+        # ⚡ PERFORMANCE: Usar SQL LIKE para pré-filtrar antes do loop
+        termo = item.descricao[:30]  # Primeiros 30 caracteres
+        vinculos_candidatos = db.query(VinculoOlist).filter(
+            VinculoOlist.nf_descricao.like(f"%{termo}%")
+        ).all()
+
         best_match = None
         best_score = 0
-        for v in todos_vinculos:
+        for v in vinculos_candidatos:
+            # 🔒 SEGURANÇA: Verificar se nf_descricao não é None
+            if v.nf_descricao is None:
+                continue
             score = similaridade(item.descricao, v.nf_descricao)
             if score > best_score:
                 best_score = score
                 best_match = v
-        if best_match and best_score >= 0.80:
+        if best_match and best_score >= MIN_FUZZY_CONFIDENCE:
             return best_match, best_score
 
     return None, 0
@@ -189,11 +202,14 @@ async def upload_nfe(request: Request):
     content = await file.read()
 
     try:
+        # 🔒 SEGURANÇA: Sanitizar nome do arquivo para evitar path traversal
+        safe_filename = uuid.uuid4().hex + os.path.splitext(file.filename)[1]
+
         if file_ext == "xml":
             result = NFeParsing.parse_xml(content)
         else:
             # Save temp file for OCR processing
-            temp_path = os.path.join(UPLOAD_DIR, file.filename)
+            temp_path = os.path.join(UPLOAD_DIR, safe_filename)
             with open(temp_path, "wb") as f:
                 f.write(content)
             result = NFeParsing.parse_pdf_ocr(temp_path)
@@ -211,7 +227,7 @@ async def upload_nfe(request: Request):
                 cnpj=result.get("cnpj", ""),
                 endereco=result.get("endereco", ""),
                 data_emissao=result.get("data_emissao"),
-                arquivo_original=file.filename,
+                arquivo_original=safe_filename,
                 tipo_documento="nfe" if file_ext == "xml" else "pdf",
                 status="processado",
                 xml_processado=content.decode('utf-8', errors='ignore') if file_ext == "xml" else None
@@ -243,15 +259,15 @@ async def upload_nfe(request: Request):
             for estoque_item in items_criados:
                 vinculo, confianca = auto_buscar_vinculo(db, estoque_item)
                 if vinculo:
-                    # Auto-vincular se confiança >= 95% (match exato)
-                    if confianca >= 0.95:
+                    # Auto-vincular se confiança >= MIN_AUTO_CONFIDENCE (match exato)
+                    if confianca >= MIN_AUTO_CONFIDENCE:
                         estoque_item.olist_produto_id = vinculo.olist_produto_id
                         estoque_item.olist_sku = vinculo.olist_sku
                         estoque_item.olist_nome = vinculo.olist_nome
                         estoque_item.vinculado_em = datetime.utcnow()
                         db.commit()
                     else:
-                        # Sugerir se confiança entre 80% e 95% (fuzzy match)
+                        # Sugerir se confiança entre MIN_FUZZY_CONFIDENCE e MIN_AUTO_CONFIDENCE (fuzzy match)
                         sugestoes_vinculacao.append({
                             "item_id": estoque_item.id,
                             "descricao": estoque_item.descricao,
@@ -282,8 +298,12 @@ async def upload_nfe(request: Request):
 
 async def get_nfs(request: Request):
     """List all NFs with pagination"""
-    skip = int(request.query_params.get("skip", 0))
-    limit = int(request.query_params.get("limit", 500))
+    try:
+        skip = int(request.query_params.get("skip", 0))
+        # 🔒 SEGURANÇA: Limitar paginação para evitar DoS
+        limit = min(int(request.query_params.get("limit", 100)), MAX_PAGINATION_LIMIT)
+    except ValueError:
+        return JSONResponse({"error": "Parâmetros skip/limit devem ser números inteiros"}, status_code=400)
 
     db = SessionLocal()
     try:
@@ -323,10 +343,14 @@ async def get_nf(request: Request):
 
 async def get_estoque_virtual(request: Request):
     """Get consolidated virtual inventory - sum of all products"""
+    from sqlalchemy.orm import joinedload
     db = SessionLocal()
     try:
+        # ⚡ PERFORMANCE: Usar joinedload para evitar N+1 queries
         # Get all items grouped by product description
-        items = db.query(ItemEstoque).all()
+        items = db.query(ItemEstoque).options(
+            joinedload(ItemEstoque.nota_fiscal)
+        ).all()
 
         # Consolidate by description
         estoque_consolidado = {}
@@ -404,6 +428,8 @@ async def confirmar_estoque(request: Request):
             "divergencia": divergencia
         })
     except Exception as e:
+        # 🔒 ROLLBACK: Desfazer alterações em caso de erro
+        db.rollback()
         return JSONResponse({"error": str(e)}, status_code=500)
     finally:
         db.close()
@@ -630,7 +656,7 @@ async def adicionar_produto_manual(request: Request):
         db.close()
 
 async def buscar_produtos_olist(request: Request):
-    """Busca produtos na Olist via API v3 (OAuth2)"""
+    """Busca produtos na Olist via API v3 (OAuth2) ou token simples (fallback)"""
     try:
         query = request.query_params.get("q", "")
 
@@ -641,21 +667,21 @@ async def buscar_produtos_olist(request: Request):
                 "mensagem": "Digite ao menos 1 caractere para buscar"
             })
 
-        # Verificar se está autorizado
-        if not olist.get_access_token():
-            print("[BUSCA] Olist nao autorizado")
+        # Buscar via API (com fallback automático para token simples)
+        print(f"[BUSCA] Buscando na Olist: {query}")
+        produtos = olist.buscar_produtos(query)
+
+        # Se não encontrou produtos e não tem nenhum token configurado
+        if not produtos and not olist.get_access_token() and not olist.token_v2:
+            print("[BUSCA] Nenhum token Olist configurado")
             return JSONResponse({
                 "produtos": [],
                 "total": 0,
                 "termo_busca": query,
                 "nao_autorizado": True,
                 "url_autorizacao": "http://localhost:8000/api/olist/conectar",
-                "mensagem": "Conecte-se à Olist primeiro (acesse /api/olist/conectar)"
+                "mensagem": "Configure a chave OLIST_API_TOKEN_SIMPLE no .env ou conecte-se via OAuth2"
             })
-
-        # Buscar via API v3
-        print(f"[BUSCA] Buscando na Olist: {query}")
-        produtos = olist.buscar_produtos(query)
 
         if produtos:
             return JSONResponse({
@@ -765,14 +791,43 @@ async def olist_status(request: Request):
     return JSONResponse(status)
 
 
-async def olist_listar_anuncios(request: Request):
-    """Lista anúncios (produtos publicados) da Olist"""
-    anuncios = olist.listar_anuncios(limite=100)
+async def olist_diagnostico(request: Request):
+    """Diagnóstico da integração Olist - para debug"""
+    try:
+        diagnostico = {
+            "oauth2_configurado": bool(olist.client_id and olist.client_secret),
+            "token_simples_configurado": bool(olist.token_v2),
+            "token_oauth2_valido": bool(olist.get_access_token()),
+            "tentar_lista_produtos": False,
+            "erro": None
+        }
 
-    return JSONResponse({
-        "total": len(anuncios),
-        "anuncios": anuncios
-    })
+        # Tentar listar alguns produtos com mais detalhes
+        print("[DIAG] Testando conexão com Olist...")
+        token = olist.get_access_token() or olist.token_v2
+
+        if token:
+            try:
+                url = "https://api.tiny.com.br/public-api/v3/produtos?limit=1"
+                headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+                req = urllib.request.Request(url, headers=headers, method="GET")
+                with urllib.request.urlopen(req, timeout=5) as response:
+                    resposta = json.loads(response.read().decode("utf-8"))
+                    diagnostico["conexao_ok"] = True
+                    diagnostico["resposta_tipo"] = type(resposta).__name__
+                    diagnostico["primeiro_campo"] = list(resposta.keys())[0] if isinstance(resposta, dict) else "lista"
+            except urllib.error.HTTPError as e:
+                diagnostico["conexao_ok"] = False
+                diagnostico["erro"] = f"HTTP {e.code}: {e.read().decode('utf-8')[:100]}"
+            except Exception as e:
+                diagnostico["conexao_ok"] = False
+                diagnostico["erro"] = str(e)
+        else:
+            diagnostico["erro"] = "Nenhum token disponível"
+
+        return JSONResponse(diagnostico)
+    except Exception as e:
+        return JSONResponse({"erro": str(e)}, status_code=500)
 
 
 async def vincular_produto_olist(request: Request):
@@ -784,6 +839,10 @@ async def vincular_produto_olist(request: Request):
         olist_produto_id = data.get("olist_produto_id")
         olist_sku = data.get("olist_sku", "")
         olist_nome = data.get("olist_nome", "")
+
+        # 🔒 VALIDAÇÃO: Verificar se campos obrigatórios estão presentes
+        if not item_id or not olist_produto_id:
+            return JSONResponse({"error": "item_id e olist_produto_id são obrigatórios"}, status_code=400)
 
         item = db.query(ItemEstoque).filter(ItemEstoque.id == item_id).first()
         if not item:
@@ -1069,6 +1128,10 @@ async def excluir_multiplas_notas(request: Request):
         data = await request.json()
         nf_ids = data.get("nf_ids", [])
 
+        # 🔒 VALIDAÇÃO: Verificar se é uma lista
+        if not isinstance(nf_ids, list):
+            return JSONResponse({"error": "nf_ids deve ser uma lista"}, status_code=400)
+
         if not nf_ids:
             return JSONResponse({"error": "Nenhuma nota selecionada"}, status_code=400)
 
@@ -1108,7 +1171,14 @@ async def baixar_nota_fiscal(request: Request):
         if not nf:
             return JSONResponse({"error": "Nota fiscal não encontrada"}, status_code=404)
 
+        # 🔒 SEGURANÇA: Validar que o arquivo está dentro de UPLOAD_DIR
         arquivo_path = os.path.join(UPLOAD_DIR, nf.arquivo_original)
+        real_path = os.path.realpath(arquivo_path)
+        upload_dir_real = os.path.realpath(UPLOAD_DIR)
+
+        if not real_path.startswith(upload_dir_real):
+            return JSONResponse({"error": "Acesso negado"}, status_code=403)
+
         if not os.path.exists(arquivo_path):
             return JSONResponse({"error": "Arquivo não encontrado"}, status_code=404)
 
@@ -1230,6 +1300,7 @@ routes = [
     Route("/api/olist/conectar", olist_conectar, methods=["GET"]),
     Route("/api/olist/callback", olist_callback, methods=["GET"]),
     Route("/api/olist/status", olist_status, methods=["GET"]),
+    Route("/api/olist/diagnostico", olist_diagnostico, methods=["GET"]),
     Route("/api/olist/produtos", buscar_produtos_olist, methods=["GET"]),
     Route("/api/olist/detectar-kit", detectar_kit_automatico, methods=["GET"]),
     Route("/api/olist/produtos-todos", listar_produtos_olist, methods=["GET"]),

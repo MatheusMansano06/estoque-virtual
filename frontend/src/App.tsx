@@ -79,6 +79,7 @@ function App() {
   const [message, setMessage] = useState('')
   const [modalOpen, setModalOpen] = useState(false)
   const [produtoSelecionado, setProdutoSelecionado] = useState<ProdutoEstoque | null>(null)
+  const [itensSelecionadosMultiplos, setItensSelecionadosMultiplos] = useState<Set<number>>(new Set())
   const [mostrarTodosEstoque, setMostrarTodosEstoque] = useState(false)
   const [modalDetalhesNFAberto, setModalDetalhesNFAberto] = useState(false)
   const [modalAdicionarProdutoAberto, setModalAdicionarProdutoAberto] = useState(false)
@@ -403,6 +404,72 @@ function App() {
       }]
     }
     setProdutoSelecionado(produtoEstoque)
+    setModalOpen(true)
+  }
+
+  const toggleSelecaoMultipla = (itemId: number) => {
+    const novo = new Set(itensSelecionadosMultiplos)
+    if (novo.has(itemId)) {
+      novo.delete(itemId)
+    } else {
+      novo.add(itemId)
+    }
+    setItensSelecionadosMultiplos(novo)
+  }
+
+  // Agrupa itens pela descrição
+  const agruparItensPorDescricao = (itens: ItemNota[]) => {
+    const grupos: { [key: string]: ItemNota[] } = {}
+    itens.forEach((item) => {
+      if (!grupos[item.descricao]) {
+        grupos[item.descricao] = []
+      }
+      grupos[item.descricao].push(item)
+    })
+    return Object.entries(grupos).map(([descricao, items]) => ({
+      descricao,
+      items,
+      totalQtd: items.reduce((s, i) => s + i.quantidade_nf, 0),
+      selecionados: items.filter(i => itensSelecionadosMultiplos.has(i.id))
+    }))
+  }
+
+  const enviarMultiplosEmMassa = async () => {
+    if (!notaDetalheAberta || itensSelecionadosMultiplos.size === 0) return
+
+    const notaSelecionada = notaDetalheAberta
+    const itensArray = (notaSelecionada.itens || []).filter(i => itensSelecionadosMultiplos.has(i.id))
+
+    if (itensArray.length === 0) return
+
+    const primeiroItem = itensArray[0]
+    const descricaoComum = primeiroItem.descricao
+    const qtdTotal = itensArray.reduce((s, i) => s + i.quantidade_nf, 0)
+
+    const msg = `Confirmar envio em massa?\n\n` +
+      `Produto: ${descricaoComum}\n` +
+      `Quantidade de registros: ${itensArray.length}\n` +
+      `Quantidade total: ${Math.round(qtdTotal)} unidades\n\n` +
+      `Os registros serão agrupados e enviados como uma única entrada para a Olist.`
+
+    if (!window.confirm(msg)) return
+
+    setProdutoSelecionado({
+      id_item: itensArray[0].id,
+      descricao: descricaoComum,
+      codigo_produto: itensArray[0].codigo_produto,
+      quantidade_total: qtdTotal,
+      quantidade_nf: qtdTotal,
+      quantidade_confirmada: qtdTotal,
+      preco_unitario: itensArray[0].preco_unitario,
+      notas_fiscais: itensArray.map(i => ({
+        numero_nf: notaSelecionada.numero_nf || '',
+        serie: notaSelecionada.serie || '',
+        fornecedor: notaSelecionada.fornecedor || '',
+        quantidade: i.quantidade_nf
+      }))
+    } as any)
+    setItensSelecionadosMultiplos(new Set())
     setModalOpen(true)
   }
 
@@ -1646,24 +1713,132 @@ function App() {
                       <div style={{ marginBottom: '1rem' }}>
                         <button onClick={() => setModalAdicionarProdutoAberto(true)} style={{ padding: '0.6rem 1.1rem', background: '#4caf50', color: '#fff', border: 'none', borderRadius: 6, fontWeight: 600, cursor: 'pointer' }}>+ Adicionar Produto Manual</button>
                       </div>
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-                        {(nota.itens || []).map((item) => {
-                          const subido = !!item.estoque_olist_atualizado_em
-                          const conferido = item.quantidade_confirmada !== null && item.quantidade_confirmada !== undefined
+
+                      {/* Produtos agrupados por descrição */}
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
+                        {agruparItensPorDescricao(nota.itens || []).map((grupo) => {
+                          const temSelecionados = grupo.selecionados.length > 0
                           return (
-                            <div key={item.id} style={{ border: '1px solid #e0e0e0', borderRadius: 8, padding: '1rem 1.25rem', display: 'grid', gridTemplateColumns: '1fr auto', gap: '1rem', alignItems: 'center' }}>
-                              <div>
-                                <div style={{ fontWeight: 600, color: '#1a1a1a' }}>{item.descricao}</div>
-                                <div style={{ color: '#90a4ae', fontSize: '0.8rem' }}>Cód: {item.codigo_produto} · Esperado: {Math.round(item.quantidade_nf)} un{conferido ? ` · Recebido: ${Math.round(item.quantidade_confirmada as number)}` : ''}</div>
-                                <div style={{ marginTop: 4 }}>
-                                  {subido
-                                    ? <span style={{ background: '#e8f5e9', color: '#2e7d32', fontSize: '0.7rem', fontWeight: 700, padding: '0.15rem 0.5rem', borderRadius: 999 }}>✅ Subido na Olist</span>
-                                    : conferido
-                                      ? <span style={{ background: '#e3f2fd', color: '#1565c0', fontSize: '0.7rem', fontWeight: 700, padding: '0.15rem 0.5rem', borderRadius: 999 }}>🔄 Conferido</span>
-                                      : <span style={{ background: '#fff3e0', color: '#e65100', fontSize: '0.7rem', fontWeight: 700, padding: '0.15rem 0.5rem', borderRadius: 999 }}>🆕 A conferir</span>}
+                            <div key={grupo.descricao} style={{ border: temSelecionados ? '2px solid #2196F3' : '1px solid #e0e0e0', borderRadius: 8, overflow: 'hidden', background: temSelecionados ? '#e3f2fd' : '#fff' }}>
+                              {/* Header do grupo */}
+                              <div style={{ background: temSelecionados ? '#bbdefb' : '#f5f5f5', padding: '1rem 1.25rem', borderBottom: '1px solid #e0e0e0', display: 'flex', alignItems: 'center', gap: '1rem', justifyContent: 'space-between', flexWrap: 'wrap' }}>
+                                <div style={{ flex: 1, minWidth: '250px' }}>
+                                  <div style={{ fontWeight: 700, color: '#1a1a1a', fontSize: '1rem' }}>{grupo.descricao}</div>
+                                  <div style={{ color: '#666', fontSize: '0.85rem' }}>
+                                    {grupo.items.length} registro{grupo.items.length !== 1 ? 's' : ''} · Total: {Math.round(grupo.totalQtd)} un
+                                    {grupo.selecionados.length > 0 && <span style={{ color: '#2196F3', fontWeight: 700, marginLeft: '0.5rem' }}>· {grupo.selecionados.length} selecionado{grupo.selecionados.length !== 1 ? 's' : ''}</span>}
+                                  </div>
+                                </div>
+                                <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                                  {grupo.items.length > 1 && grupo.selecionados.length > 0 && (
+                                    <button
+                                      onClick={() => {
+                                        if (!notaDetalheAberta) return
+                                        const primeiroItem = grupo.selecionados[0]
+                                        const qtdTotal = grupo.selecionados.reduce((s, i) => s + i.quantidade_nf, 0)
+                                        const msg = `Confirmar envio em massa?\n\nProduto: ${grupo.descricao}\nQuantidade de registros: ${grupo.selecionados.length}\nQuantidade total: ${Math.round(qtdTotal)} unidades\n\nOs registros serão agrupados e enviados como uma única entrada para a Olist.`
+                                        if (!window.confirm(msg)) return
+
+                                        setProdutoSelecionado({
+                                          id_item: primeiroItem.id,
+                                          descricao: grupo.descricao,
+                                          codigo_produto: primeiroItem.codigo_produto,
+                                          quantidade_total: qtdTotal,
+                                          quantidade_nf: qtdTotal,
+                                          quantidade_confirmada: qtdTotal,
+                                          preco_unitario: primeiroItem.preco_unitario,
+                                          notas_fiscais: grupo.selecionados.map(i => ({
+                                            numero_nf: notaDetalheAberta.numero_nf || '',
+                                            serie: notaDetalheAberta.serie || '',
+                                            fornecedor: notaDetalheAberta.fornecedor || '',
+                                            quantidade: i.quantidade_nf
+                                          }))
+                                        } as any)
+                                        setItensSelecionadosMultiplos(new Set())
+                                        setModalOpen(true)
+                                      }}
+                                      style={{ padding: '0.4rem 0.8rem', background: '#2196F3', color: '#fff', border: 'none', borderRadius: 4, fontSize: '0.75rem', fontWeight: 600, cursor: 'pointer', whiteSpace: 'nowrap' }}
+                                    >
+                                      📦 {grupo.selecionados.length} em Massa
+                                    </button>
+                                  )}
+                                  {grupo.items.length > 1 && (
+                                    <button
+                                      onClick={() => {
+                                        const novo = new Set(itensSelecionadosMultiplos)
+                                        const todosSelecionados = grupo.items.every(i => novo.has(i.id))
+                                        grupo.items.forEach(i => {
+                                          if (todosSelecionados) novo.delete(i.id)
+                                          else novo.add(i.id)
+                                        })
+                                        setItensSelecionadosMultiplos(novo)
+                                      }}
+                                      style={{ padding: '0.4rem 0.8rem', background: temSelecionados ? '#1976D2' : '#e0e0e0', color: temSelecionados ? '#fff' : '#666', border: 'none', borderRadius: 4, fontSize: '0.75rem', fontWeight: 600, cursor: 'pointer', whiteSpace: 'nowrap' }}
+                                    >
+                                      {grupo.items.every(i => itensSelecionadosMultiplos.has(i.id)) ? '✓ Desselecionar' : '☐ Selecionar'}
+                                    </button>
+                                  )}
                                 </div>
                               </div>
-                              <button onClick={() => conferirProduto(item)} style={{ padding: '0.6rem 1.2rem', background: '#007acc', color: '#fff', border: 'none', borderRadius: 6, fontWeight: 600, cursor: 'pointer', whiteSpace: 'nowrap' }}>Conferir</button>
+
+                              {/* Items do grupo */}
+                              <div>
+                                {grupo.items.map((item, idx) => {
+                                  const subido = !!item.estoque_olist_atualizado_em
+                                  const conferido = item.quantidade_confirmada !== null && item.quantidade_confirmada !== undefined
+                                  const selecionado = itensSelecionadosMultiplos.has(item.id)
+                                  return (
+                                    <div
+                                      key={item.id}
+                                      style={{
+                                        display: 'grid',
+                                        gridTemplateColumns: grupo.items.length > 1 ? '30px 1fr auto' : '1fr auto',
+                                        gap: '1rem',
+                                        alignItems: 'center',
+                                        padding: '1rem 1.25rem',
+                                        borderTop: idx > 0 ? '1px solid #eee' : 'none',
+                                        background: selecionado ? '#e3f2fd' : idx % 2 === 0 ? '#fff' : '#fafafa'
+                                      }}
+                                    >
+                                      {/* Checkbox */}
+                                      {grupo.items.length > 1 && (
+                                        <input
+                                          type="checkbox"
+                                          checked={selecionado}
+                                          onChange={() => toggleSelecaoMultipla(item.id)}
+                                          style={{ width: '18px', height: '18px', cursor: 'pointer' }}
+                                        />
+                                      )}
+
+                                      {/* Info */}
+                                      <div>
+                                        <div style={{ fontWeight: 600, color: '#1a1a1a' }}>
+                                          {grupo.items.length > 1 && <span style={{ color: '#999', marginRight: '0.5rem' }}>({grupo.items.indexOf(item) + 1})</span>}
+                                          {Math.round(item.quantidade_nf)} un
+                                        </div>
+                                        <div style={{ color: '#90a4ae', fontSize: '0.8rem' }}>
+                                          Cód: {item.codigo_produto}{conferido ? ` · Recebido: ${Math.round(item.quantidade_confirmada as number)}` : ''}
+                                        </div>
+                                        <div style={{ marginTop: 4 }}>
+                                          {subido
+                                            ? <span style={{ background: '#e8f5e9', color: '#2e7d32', fontSize: '0.7rem', fontWeight: 700, padding: '0.15rem 0.5rem', borderRadius: 999 }}>✅ Subido na Olist</span>
+                                            : conferido
+                                              ? <span style={{ background: '#e3f2fd', color: '#1565c0', fontSize: '0.7rem', fontWeight: 700, padding: '0.15rem 0.5rem', borderRadius: 999 }}>🔄 Conferido</span>
+                                              : <span style={{ background: '#fff3e0', color: '#e65100', fontSize: '0.7rem', fontWeight: 700, padding: '0.15rem 0.5rem', borderRadius: 999 }}>🆕 A conferir</span>}
+                                        </div>
+                                      </div>
+
+                                      {/* Botão Conferir */}
+                                      <button
+                                        onClick={() => conferirProduto(item)}
+                                        style={{ padding: '0.6rem 1rem', background: '#007acc', color: '#fff', border: 'none', borderRadius: 6, fontWeight: 600, cursor: 'pointer', whiteSpace: 'nowrap', fontSize: '0.85rem' }}
+                                      >
+                                        Conferir
+                                      </button>
+                                    </div>
+                                  )
+                                })}
+                              </div>
                             </div>
                           )
                         })}
@@ -2407,21 +2582,53 @@ function App() {
               </div>
             )}
 
+            {/* AVISO E BOTÃO DE AUTORIZAÇÃO */}
+            <div style={{
+              background: '#fff3e0',
+              border: '2px solid #ff9800',
+              padding: '1rem 1.5rem',
+              borderRadius: '8px',
+              marginBottom: '1.5rem'
+            }}>
+              <p style={{ color: '#e65100', fontWeight: 700, margin: 0 }}>🔐 Conecte à Olist para ativar a busca automática</p>
+              <p style={{ color: '#d84315', fontSize: '0.9rem', margin: '0.5rem 0 1rem 0' }}>
+                Clique no botão abaixo para autorizar e ativar a busca de produtos
+              </p>
+              <button
+                onClick={() => window.location.href = 'http://localhost:8000/api/olist/conectar'}
+                style={{
+                  padding: '0.8rem 1.5rem',
+                  background: '#FF6C00',
+                  color: '#fff',
+                  border: 'none',
+                  borderRadius: '6px',
+                  fontWeight: 700,
+                  cursor: 'pointer',
+                  fontSize: '0.95rem'
+                }}
+                onMouseEnter={(e) => (e.currentTarget.style.background = '#E55100')}
+                onMouseLeave={(e) => (e.currentTarget.style.background = '#FF6C00')}
+              >
+                🔓 Conectar à Olist Agora
+              </button>
+            </div>
+
             {/* BUSCA DE SKU OLIST */}
             <div className="form-group" style={{ position: 'relative' }}>
-              <label className="form-label">Buscar Anúncio Olist (por SKU ou Nome)</label>
+              <label className="form-label">Buscar Anúncio Olist (por SKU ou Nome) - <span style={{color: '#999', fontSize: '0.85rem'}}>opcional</span></label>
               <input
                 type="text"
                 className="form-input"
                 value={produtoOlistSKU}
                 onChange={(e) => handleBuscarSKU(e.target.value)}
-                placeholder="Digite SKU ou nome do produto (mínimo 2 caracteres)..."
+                placeholder="Digite SKU ou nome do produto (mínimo 2 caracteres)... ou pule para preencher manualmente"
                 style={{
                   padding: '0.75rem',
                   border: produtoOlistSKU.length > 0 ? '2px solid #007acc' : '1px solid #ddd',
                   borderRadius: '4px',
                   fontSize: '0.95rem',
-                  transition: 'all 0.2s'
+                  transition: 'all 0.2s',
+                  opacity: 0.7
                 }}
               />
 
@@ -2485,15 +2692,23 @@ function App() {
                   fontSize: '0.9rem',
                   zIndex: 10
                 }}>
-                  Nenhum produto encontrado com "{produtoOlistSKU}".
+                  <strong>Nenhum produto encontrado com "{produtoOlistSKU}"</strong>
+                  <br /><br />
+                  <strong>💡 Dicas:</strong>
                   <br />
-                  Verifique se o SKU ou nome está correto na sua conta Olist.
+                  1. Verifique se o SKU/nome está correto na sua conta Olist
+                  <br />
+                  2. Tente buscar pelo SKU exato do produto
+                  <br />
+                  3. Tente buscar com parte do nome (ex: "SPIKE" ao invés de "VISEIRA SPIKE II")
+                  <br />
+                  4. Se a busca continuar não funcionando, você pode preencher manualmente os dados abaixo
                 </div>
               )}
             </div>
 
-            {/* MODO MANUAL - Quando nenhum produto foi encontrado via API */}
-            {produtoOlistSKU.length >= 2 && sugestoesSKU.length === 0 && !produtoOlistSelecionado.sku && (
+            {/* MODO MANUAL - SEMPRE DISPONÍVEL */}
+            {!produtoOlistSelecionado.sku && (
               <div style={{
                 background: '#f0f9ff',
                 border: '2px solid #007acc',
@@ -2502,9 +2717,9 @@ function App() {
                 marginTop: '1.5rem',
                 marginBottom: '1.5rem'
               }}>
-                <h3 style={{ color: '#007acc', marginTop: 0 }}>Preencher Dados Manualmente</h3>
+                <h3 style={{ color: '#007acc', marginTop: 0 }}>📝 Preencher Dados do Anúncio Manualmente</h3>
                 <p style={{ color: '#666', fontSize: '0.9rem', marginBottom: '1.5rem' }}>
-                  Preencha os dados do produto encontrado na sua Olist:
+                  Copie os dados do anúncio da sua Olist e preencha abaixo (funciona melhor que a busca automática no momento):
                 </p>
 
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem', marginBottom: '1rem' }}>
