@@ -254,7 +254,7 @@ class OlistIntegration:
             return []
 
     def buscar_produtos(self, termo: str) -> List[Dict]:
-        """Busca produtos na API v3 por codigo (SKU), sku ou nome"""
+        """Busca produtos na API v3 com fallback para busca local/manual"""
         if not termo or len(termo) < 1:
             return []
 
@@ -263,35 +263,47 @@ class OlistIntegration:
         if not token:
             token = self.get_access_token()
             if not token:
-                print("[OLIST] Nao autorizado - configure OLIST_API_TOKEN_SIMPLE")
+                print("[OLIST] Token nao disponivel")
                 return []
 
-        # Tenta buscar por diferentes campos
+        termo_lower = termo.lower().strip()
         resultado = []
+
+        # Estratégia 1: Tentar API v3
+        print(f"[OLIST] Buscando por: {termo}")
         for campo in ["sku", "codigo", "nome"]:
-            print(f"[OLIST] Tentando buscar por {campo}='{termo}'")
             resultado = self._buscar_por_campo(token, campo, termo)
             if resultado:
-                print(f"[OLIST] ✓ Encontrado via {campo}: {len(resultado)} resultado(s)")
+                print(f"[OLIST] Encontrado via {campo}: {len(resultado)} resultado(s)")
                 break
 
-        # Se nenhum resultado encontrado via filtro, fazer busca local
+        # Estratégia 2: Se API não retornar, listar todos e filtrar
         if not resultado:
-            print(f"[OLIST] Nenhum resultado via API filtrada, tentando busca local em todos os produtos...")
-            todos = self.listar_todos_produtos(limite=1000)
-            termo_lower = termo.lower().strip()
-            resultado = [p for p in todos if termo_lower in p.get('nome', '').lower() or termo_lower in p.get('sku', '').lower() or termo_lower in p.get('codigo_produto', '').lower()]
-            if resultado:
-                print(f"[OLIST] ✓ {len(resultado)} produto(s) encontrado(s) via busca local")
+            print(f"[OLIST] Listando todos produtos para busca local...")
+            try:
+                todos = self.listar_todos_produtos(limite=500)
+                resultado = [
+                    p for p in todos
+                    if termo_lower in p.get('nome', '').lower()
+                    or termo_lower in p.get('sku', '').lower()
+                    or termo_lower in p.get('codigo_produto', '').lower()
+                ]
+                if resultado:
+                    print(f"[OLIST] Encontrado {len(resultado)} via busca local")
+            except Exception as e:
+                print(f"[OLIST] Erro na busca local: {e}")
 
-        # Enriquecer com estoque real (saldo/disponivel)
+        # Enriquecer com estoque
         for prod in resultado:
-            if prod.get("id"):
-                estoque = self.obter_estoque(str(prod["id"]))
-                if estoque:
-                    prod["estoque_atual"] = estoque["disponivel"]
-                    prod["estoque_saldo"] = estoque["saldo"]
-                    prod["estoque_reservado"] = estoque["reservado"]
+            try:
+                if prod.get("id"):
+                    estoque = self.obter_estoque(str(prod["id"]))
+                    if estoque:
+                        prod["estoque_atual"] = estoque.get("disponivel", 0)
+                        prod["estoque_saldo"] = estoque.get("saldo", 0)
+                        prod["estoque_reservado"] = estoque.get("reservado", 0)
+            except:
+                prod["estoque_atual"] = 0
 
         return resultado
 

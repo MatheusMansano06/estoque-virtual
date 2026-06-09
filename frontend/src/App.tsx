@@ -2582,35 +2582,18 @@ function App() {
               </div>
             )}
 
-            {/* AVISO E BOTÃO DE AUTORIZAÇÃO */}
+            {/* STATUS: BUSCA OLIST ATIVA */}
             <div style={{
-              background: '#fff3e0',
-              border: '2px solid #ff9800',
+              background: '#e8f5e9',
+              border: '2px solid #4caf50',
               padding: '1rem 1.5rem',
               borderRadius: '8px',
               marginBottom: '1.5rem'
             }}>
-              <p style={{ color: '#e65100', fontWeight: 700, margin: 0 }}>🔐 Conecte à Olist para ativar a busca automática</p>
-              <p style={{ color: '#d84315', fontSize: '0.9rem', margin: '0.5rem 0 1rem 0' }}>
-                Clique no botão abaixo para autorizar e ativar a busca de produtos
+              <p style={{ color: '#2e7d32', fontWeight: 700, margin: 0 }}>✅ Busca de Produtos Olist Ativa</p>
+              <p style={{ color: '#558b2f', fontSize: '0.9rem', margin: '0.5rem 0 0 0' }}>
+                Suas credenciais estão configuradas. Digite o SKU ou nome do produto para buscar automaticamente.
               </p>
-              <button
-                onClick={() => window.location.href = 'http://localhost:8000/api/olist/conectar'}
-                style={{
-                  padding: '0.8rem 1.5rem',
-                  background: '#FF6C00',
-                  color: '#fff',
-                  border: 'none',
-                  borderRadius: '6px',
-                  fontWeight: 700,
-                  cursor: 'pointer',
-                  fontSize: '0.95rem'
-                }}
-                onMouseEnter={(e) => (e.currentTarget.style.background = '#E55100')}
-                onMouseLeave={(e) => (e.currentTarget.style.background = '#FF6C00')}
-              >
-                🔓 Conectar à Olist Agora
-              </button>
             </div>
 
             {/* BUSCA DE SKU OLIST */}
