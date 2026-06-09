@@ -706,3 +706,59 @@ class OlistIntegration:
 
 # Instancia global
 olist = OlistIntegration()
+
+    def buscar_variacoes_direto(self, sku: str) -> List[Dict]:
+        """Busca variações de produto direto na API"""
+        token = self.get_access_token()
+        if not token:
+            return []
+        
+        try:
+            # Buscar usando o endpoint de variações
+            url = f"{self.API_BASE}/variações?codigo={sku}&pageSize=100"
+            headers = {"Accept": "application/json", "Authorization": f"Bearer {token}"}
+            req = urllib.request.Request(url, headers=headers, method="GET")
+            
+            with urllib.request.urlopen(req, timeout=15) as response:
+                resposta = json.loads(response.read().decode("utf-8"))
+                variações = resposta.get("itens", [])
+                
+                resultado = []
+                for var in variações:
+                    resultado.append({
+                        "id": var.get("id", ""),
+                        "sku": var.get("sku", sku),
+                        "nome": var.get("descricao", ""),
+                        "preco": float(var.get("precos", {}).get("preco", 0) if isinstance(var.get("precos"), dict) else 0),
+                        "codigo_produto": var.get("sku", sku),
+                    })
+                
+                return resultado
+        except:
+            return []
+
+    def obter_produto_por_id(self, produto_id: str) -> Optional[Dict]:
+        """Obtém um produto específico pela ID"""
+        token = self.get_access_token()
+        if not token:
+            return None
+        
+        try:
+            url = f"{self.API_BASE}/produtos/{produto_id}"
+            headers = {"Accept": "application/json", "Authorization": f"Bearer {token}"}
+            req = urllib.request.Request(url, headers=headers, method="GET")
+            
+            with urllib.request.urlopen(req, timeout=15) as response:
+                data = json.loads(response.read().decode("utf-8"))
+                
+                return {
+                    "id": data.get("id", ""),
+                    "sku": data.get("sku", ""),
+                    "nome": data.get("descricao", ""),
+                    "preco": float(data.get("precos", {}).get("preco", 0) if isinstance(data.get("precos"), dict) else 0),
+                    "codigo_produto": data.get("sku", ""),
+                    "estoque_atual": int(data.get("estoque", {}).get("quantidade", 0) if isinstance(data.get("estoque"), dict) else 0),
+                }
+        except Exception as e:
+            print(f"[OLIST] Erro ao obter produto {produto_id}: {e}")
+            return None
