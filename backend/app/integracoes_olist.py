@@ -219,56 +219,64 @@ class OlistIntegration:
     # ========== OPERACOES NA API ==========
 
     def listar_todos_produtos(self, limite: int = 2000) -> List[Dict]:
-        """Lista TODOS os produtos com paginação (suporta 1000+)"""
+        """Lista TODOS os produtos com paginação CORRETA (suporta 1196+)"""
         resultado = []
         pagina = 1
         total_recuperado = 0
-        MAX_PAGES = 10  # Máximo 10 páginas = 2000 produtos
+        MAX_PAGES = 20  # Aumentado para 20 páginas = até 2000 produtos
+        page_size = 100  # Aumentar para 100 por página para ser mais rápido
 
         print(f"[OLIST] === Listando TODOS produtos (até {limite}) ===")
 
         # ESTRATÉGIA 1: Usar OAuth2 token (PRIORIDADE MÁXIMA - é sempre válido)
         token = self.get_access_token()
         if token:
-            print(f"[OLIST] Usando OAuth2 com paginação...")
+            print(f"[OLIST] Usando OAuth2 com paginação (página {page_size} itens)...")
             try:
                 while pagina <= MAX_PAGES and total_recuperado < limite:
-                    page_size = min(200, limite - total_recuperado)  # 200 por página
                     url = f"{self.API_BASE}/produtos?pageSize={page_size}&page={pagina}"
 
-                    print(f"[OLIST] Página {pagina}, recuperados: {total_recuperado}")
+                    print(f"[OLIST] Carregando página {pagina}... (total: {total_recuperado})")
 
                     headers = {"Accept": "application/json", "Authorization": f"Bearer {token}"}
                     req = urllib.request.Request(url, headers=headers, method="GET")
 
-                    with urllib.request.urlopen(req, timeout=15) as response:
-                        resposta = json.loads(response.read().decode("utf-8"))
+                    try:
+                        with urllib.request.urlopen(req, timeout=15) as response:
+                            resposta = json.loads(response.read().decode("utf-8"))
 
-                        produtos = resposta.get("itens") or resposta.get("data") or resposta.get("results") or (resposta if isinstance(resposta, list) else [])
+                            produtos = resposta.get("itens") or resposta.get("data") or resposta.get("results") or (resposta if isinstance(resposta, list) else [])
 
-                        if not produtos:
-                            print(f"[OLIST] Fim da paginação: página {pagina} vazia")
-                            break
+                            if not produtos or len(produtos) == 0:
+                                print(f"[OLIST] Fim! Página {pagina} vazia. Total: {total_recuperado}")
+                                break
 
-                        print(f"[OLIST] Página {pagina}: {len(produtos)} produtos")
+                            print(f"[OLIST] Página {pagina}: {len(produtos)} produtos | Total: {total_recuperado + len(produtos)}")
 
-                        for prod in produtos:
-                            resultado.append({
-                                "id": prod.get("id", ""),
-                                "sku": prod.get("sku", ""),
-                                "nome": prod.get("descricao") or prod.get("nome", ""),
-                                "preco": float(prod.get("precos", {}).get("preco", 0) if isinstance(prod.get("precos"), dict) else prod.get("preco", 0) or 0),
-                                "codigo_produto": prod.get("sku", ""),
-                            })
-                            total_recuperado += 1
+                            for prod in produtos:
+                                resultado.append({
+                                    "id": prod.get("id", ""),
+                                    "sku": prod.get("sku", ""),
+                                    "nome": prod.get("descricao") or prod.get("nome", ""),
+                                    "preco": float(prod.get("precos", {}).get("preco", 0) if isinstance(prod.get("precos"), dict) else prod.get("preco", 0) or 0),
+                                    "codigo_produto": prod.get("sku", ""),
+                                })
+                                total_recuperado += 1
 
-                        pagina += 1
+                                if total_recuperado >= limite:
+                                    print(f"[OLIST] Limite atingido: {total_recuperado}")
+                                    break
 
-                    if total_recuperado >= limite:
+                            pagina += 1
+
+                            if total_recuperado >= limite:
+                                break
+                    except Exception as page_error:
+                        print(f"[OLIST] Erro na página {pagina}: {page_error}")
                         break
 
                 if resultado:
-                    print(f"[OLIST] OK: {len(resultado)} produtos retornados (total: {total_recuperado})")
+                    print(f"[OLIST] OK: {len(resultado)} produtos retornados (total: {total_recuperado} de {limite})")
                     return resultado
             except Exception as e:
                 print(f"[OLIST] OAuth2 falhou: {e}")
