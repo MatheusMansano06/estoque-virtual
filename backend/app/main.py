@@ -1087,6 +1087,42 @@ async def olist_deletar_vinculo(request: Request):
         db.close()
 
 
+async def adicionar_produto_olist_manual(request: Request):
+    """Adiciona um produto Olist manualmente para opções de vinculação"""
+    db = SessionLocal()
+    try:
+        data = await request.json()
+        sku = data.get("sku", "").strip()
+        nome = data.get("nome", "").strip()
+        preco = float(data.get("preco", 0) or 0)
+        estoque = int(data.get("estoque", 0) or 0)
+
+        if not sku or not nome:
+            return JSONResponse(
+                {"error": "SKU e Nome são obrigatórios"},
+                status_code=400
+            )
+
+        # Criar como sugestão retornável
+        resultado = {
+            "id": f"manual_{sku}",
+            "sku": sku,
+            "nome": nome,
+            "preco": preco,
+            "estoque_atual": estoque,
+            "estoque_saldo": estoque,
+            "estoque_reservado": 0,
+            "fonte": "manual"
+        }
+
+        return JSONResponse(resultado)
+
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+    finally:
+        db.close()
+
+
 async def excluir_nota_fiscal(request: Request):
     """Exclui uma nota fiscal e todos os seus itens"""
     db = SessionLocal()
@@ -1307,6 +1343,7 @@ routes = [
     Route("/api/olist/vincular-produto", vincular_produto_olist, methods=["POST"]),
     Route("/api/olist/aceitar-sugestao", aceitar_sugestao_vinculo, methods=["POST"]),
     Route("/api/olist/atualizar-estoque", atualizar_estoque_olist, methods=["POST"]),
+    Route("/api/olist/adicionar-manual", adicionar_produto_olist_manual, methods=["POST"]),
     # Memória de vínculos (de-para fornecedor -> Olist)
     Route("/api/olist/sugestao-vinculo", olist_sugestao_vinculo, methods=["GET"]),
     Route("/api/olist/vinculos", olist_listar_vinculos, methods=["GET"]),
