@@ -80,6 +80,9 @@ function App() {
   const [modalOpen, setModalOpen] = useState(false)
   const [produtoSelecionado, setProdutoSelecionado] = useState<ProdutoEstoque | null>(null)
   const [itensSelecionadosMultiplos, setItensSelecionadosMultiplos] = useState<Set<number>>(new Set())
+  // Grupos de produto expandidos manualmente (setinha). Grupos multi-registro
+  // comecam colapsados; o usuario expande para ver todos os registros.
+  const [gruposExpandidos, setGruposExpandidos] = useState<Set<string>>(new Set())
   const [mostrarTodosEstoque, setMostrarTodosEstoque] = useState(false)
   const [modalDetalhesNFAberto, setModalDetalhesNFAberto] = useState(false)
   const [modalAdicionarProdutoAberto, setModalAdicionarProdutoAberto] = useState(false)
@@ -782,9 +785,18 @@ function App() {
         setPagina('inicial')
         setModalDetalhesNFAberto(false)
         setAbaDetalhe('conferencia')
-        // Manter a nota selecionada para abrir o modal
-        if (notaSelecionada) {
-          setNotaDetalheAberta(notaSelecionada)
+        // Reabrir o modal com a nota ATUALIZADA da API (nao a versao antiga em
+        // memoria) - senao os itens recem-subidos continuam aparecendo "A conferir"
+        const nfIdReabrir = notaDetalheAberta?.id ?? notaSelecionada?.id
+        if (nfIdReabrir) {
+          try {
+            const resNota = await fetch(`http://127.0.0.1:8000/api/notas-fiscais/${nfIdReabrir}`)
+            const notaAtualizada = await resNota.json()
+            setNotaSelecionada(notaAtualizada)
+            setNotaDetalheAberta(notaAtualizada)
+          } catch {
+            if (notaSelecionada) setNotaDetalheAberta(notaSelecionada)
+          }
         }
         return
       } else {
@@ -1748,15 +1760,47 @@ function App() {
                       <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
                         {agruparItensPorDescricao(nota.itens || []).map((grupo) => {
                           const temSelecionados = grupo.selecionados.length > 0
+                          const multi = grupo.items.length > 1
+                          // Grupo de 1 registro sempre aberto; multi-registro só se expandido
+                          const expandido = !multi || gruposExpandidos.has(grupo.descricao)
+                          // Resumo de status para mostrar no cabeçalho (sem precisar abrir)
+                          const qSubidos = grupo.items.filter(i => i.estoque_olist_atualizado_em).length
+                          const qConf = grupo.items.filter(i => (i.quantidade_confirmada !== null && i.quantidade_confirmada !== undefined) && !i.estoque_olist_atualizado_em).length
+                          const qFalta = grupo.items.length - qSubidos - qConf
+                          const toggleExpandir = () => {
+                            const novo = new Set(gruposExpandidos)
+                            if (novo.has(grupo.descricao)) novo.delete(grupo.descricao)
+                            else novo.add(grupo.descricao)
+                            setGruposExpandidos(novo)
+                          }
                           return (
                             <div key={grupo.descricao} style={{ border: temSelecionados ? '2px solid #2196F3' : '1px solid #e0e0e0', borderRadius: 8, overflow: 'hidden', background: temSelecionados ? '#e3f2fd' : '#fff' }}>
                               {/* Header do grupo */}
                               <div style={{ background: temSelecionados ? '#bbdefb' : '#f5f5f5', padding: '1rem 1.25rem', borderBottom: '1px solid #e0e0e0', display: 'flex', alignItems: 'center', gap: '1rem', justifyContent: 'space-between', flexWrap: 'wrap' }}>
-                                <div style={{ flex: 1, minWidth: '250px' }}>
-                                  <div style={{ fontWeight: 700, color: '#1a1a1a', fontSize: '1rem' }}>{grupo.descricao}</div>
-                                  <div style={{ color: '#666', fontSize: '0.85rem' }}>
-                                    {grupo.items.length} registro{grupo.items.length !== 1 ? 's' : ''} · Total: {Math.round(grupo.totalQtd)} un
-                                    {grupo.selecionados.length > 0 && <span style={{ color: '#2196F3', fontWeight: 700, marginLeft: '0.5rem' }}>· {grupo.selecionados.length} selecionado{grupo.selecionados.length !== 1 ? 's' : ''}</span>}
+                                <div
+                                  style={{ flex: 1, minWidth: '250px', display: 'flex', alignItems: 'center', gap: '0.6rem', cursor: multi ? 'pointer' : 'default' }}
+                                  onClick={multi ? toggleExpandir : undefined}
+                                >
+                                  {multi && (
+                                    <span
+                                      style={{ fontSize: '0.9rem', color: '#555', transition: 'transform 0.15s', transform: expandido ? 'rotate(90deg)' : 'rotate(0deg)', userSelect: 'none' }}
+                                      aria-label={expandido ? 'Recolher' : 'Expandir'}
+                                    >▶</span>
+                                  )}
+                                  <div>
+                                    <div style={{ fontWeight: 700, color: '#1a1a1a', fontSize: '1rem' }}>{grupo.descricao}</div>
+                                    <div style={{ color: '#666', fontSize: '0.85rem' }}>
+                                      {grupo.items.length} registro{grupo.items.length !== 1 ? 's' : ''} · Total: {Math.round(grupo.totalQtd)} un
+                                      {grupo.selecionados.length > 0 && <span style={{ color: '#2196F3', fontWeight: 700, marginLeft: '0.5rem' }}>· {grupo.selecionados.length} selecionado{grupo.selecionados.length !== 1 ? 's' : ''}</span>}
+                                    </div>
+                                    {multi && (
+                                      <div style={{ display: 'flex', gap: '0.4rem', marginTop: '0.35rem', flexWrap: 'wrap' }}>
+                                        {qSubidos > 0 && <span style={{ background: '#e8f5e9', color: '#2e7d32', fontSize: '0.68rem', fontWeight: 700, padding: '0.1rem 0.45rem', borderRadius: 999 }}>✅ {qSubidos} subido{qSubidos !== 1 ? 's' : ''}</span>}
+                                        {qConf > 0 && <span style={{ background: '#e3f2fd', color: '#1565c0', fontSize: '0.68rem', fontWeight: 700, padding: '0.1rem 0.45rem', borderRadius: 999 }}>🔄 {qConf} conferido{qConf !== 1 ? 's' : ''}</span>}
+                                        {qFalta > 0 && <span style={{ background: '#fff3e0', color: '#e65100', fontSize: '0.68rem', fontWeight: 700, padding: '0.1rem 0.45rem', borderRadius: 999 }}>🆕 {qFalta} a conferir</span>}
+                                        <span style={{ color: '#2196F3', fontSize: '0.68rem', fontWeight: 700 }}>{expandido ? '· clique para recolher' : '· clique para ver todos'}</span>
+                                      </div>
+                                    )}
                                   </div>
                                 </div>
                                 <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
@@ -1814,7 +1858,8 @@ function App() {
                                 </div>
                               </div>
 
-                              {/* Items do grupo */}
+                              {/* Items do grupo (so quando expandido) */}
+                              {expandido && (
                               <div>
                                 {grupo.items.map((item, idx) => {
                                   const subido = !!item.estoque_olist_atualizado_em
@@ -1872,6 +1917,7 @@ function App() {
                                   )
                                 })}
                               </div>
+                              )}
                             </div>
                           )
                         })}
