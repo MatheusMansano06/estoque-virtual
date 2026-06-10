@@ -755,11 +755,14 @@ function App() {
       }
 
       // 2. Atualizar estoque na Olist (ENTRADA da quantidade da NF)
+      // Em subida em massa, envia todos os IDs do grupo para marcar todos como subidos
+      const idsMassa = (produtoSelecionado as any).ids_massa as number[] | undefined
       const resEst = await fetch('http://127.0.0.1:8000/api/olist/atualizar-estoque', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           item_id: itemId,
+          item_ids: idsMassa && idsMassa.length > 1 ? idsMassa : undefined,
           quantidade: qtdNF,
           tipo: 'E'
         })
@@ -1768,6 +1771,9 @@ function App() {
 
                                         setProdutoSelecionado({
                                           id_item: primeiroItem.id,
+                                          // IDs de TODOS os registros do grupo (subida em massa)
+                                          // para marcar todos como subidos, nao so o primeiro
+                                          ids_massa: grupo.selecionados.map(i => i.id),
                                           descricao: grupo.descricao,
                                           codigo_produto: primeiroItem.codigo_produto,
                                           quantidade_total: qtdTotal,

@@ -1001,6 +1001,7 @@ async def atualizar_estoque_olist(request: Request):
     try:
         data = await request.json()
         item_id = data.get("item_id")
+        item_ids = data.get("item_ids")  # lista opcional: subida EM MASSA de varios registros
         quantidade = data.get("quantidade", 0)  # quantidade a ADICIONAR (entrada)
         tipo = data.get("tipo", "E")  # E=Entrada (padrao), B=Balanco, S=Saida
 
@@ -1013,7 +1014,7 @@ async def atualizar_estoque_olist(request: Request):
                 "error": "Produto não está vinculado à Olist"
             }, status_code=400)
 
-        # Chamar API para atualizar estoque (entrada da NF)
+        # Chamar API para atualizar estoque (entrada da NF) - UMA unica vez com a qtd total
         sucesso = olist.atualizar_estoque(
             item.olist_produto_id,
             quantidade=float(quantidade),
@@ -1022,13 +1023,31 @@ async def atualizar_estoque_olist(request: Request):
         )
 
         if sucesso:
-            item.estoque_olist_atualizado_em = datetime.utcnow()
+            agora = datetime.utcnow()
+
+            # Determina TODOS os itens que participaram desta entrada.
+            # Em massa, o frontend manda item_ids (todos os registros do grupo).
+            if isinstance(item_ids, list) and item_ids:
+                ids_marcar = item_ids
+            else:
+                ids_marcar = [item_id]
+
+            # Vincula todos ao mesmo anuncio Olist e marca todos como subidos.
+            # (sem isso, so o 1o registro ficava "Subido na Olist" numa subida em massa)
+            itens_grupo = db.query(ItemEstoque).filter(ItemEstoque.id.in_(ids_marcar)).all()
+            for it in itens_grupo:
+                it.olist_produto_id = item.olist_produto_id
+                it.olist_sku = item.olist_sku
+                it.olist_nome = item.olist_nome
+                it.estoque_olist_atualizado_em = agora
+
             db.commit()
 
             return JSONResponse({
                 "sucesso": True,
                 "mensagem": f"Entrada de {quantidade} unidades registrada na Olist",
-                "olist_produto_id": item.olist_produto_id
+                "olist_produto_id": item.olist_produto_id,
+                "itens_marcados": len(itens_grupo)
             })
         else:
             return JSONResponse({
