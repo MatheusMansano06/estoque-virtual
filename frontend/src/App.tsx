@@ -4,6 +4,7 @@ import { ModalDetalhes } from './ModalDetalhes'
 import { ModalDetalhesNota } from './ModalDetalhesNota'
 import { ModalDetalhesNotaFiscal } from './ModalDetalhesNotaFiscal'
 import { FornecedoresManager } from './components/FornecedoresManager'
+import { EmbaldesManager } from './components/EmbaldesManager'
 import { baixarMultiplosOuPdfs } from './services/api'
 
 interface NotaFiscal {
@@ -49,7 +50,7 @@ interface ProdutoEstoque {
   }>
 }
 
-type Pagina = 'inicial' | 'conferencia' | 'produtos_nota' | 'relacionamento_produto' | 'fornecedores'
+type Pagina = 'inicial' | 'conferencia' | 'produtos_nota' | 'relacionamento_produto' | 'fornecedores' | 'embaldes'
 
 interface Divergencia {
   item_id: number
@@ -988,12 +989,11 @@ function App() {
                   </button>
                 </form>
 
-                {/* Botão de Fornecedores */}
-                <div style={{ marginTop: '1rem', paddingTop: '1rem', borderTop: '1px solid #e0e0e0' }}>
+                {/* Botão de Fornecedores e Embaldes */}
+                <div style={{ marginTop: '1rem', paddingTop: '1rem', borderTop: '1px solid #e0e0e0', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
                   <button
                     onClick={() => setPagina('fornecedores')}
                     style={{
-                      width: '100%',
                       padding: '0.75rem 1rem',
                       background: '#fff',
                       color: '#333',
@@ -1015,7 +1015,33 @@ function App() {
                       el.style.borderColor = '#ddd'
                     }}
                   >
-                    Fornecedores
+                    👥 Fornecedores
+                  </button>
+                  <button
+                    onClick={() => setPagina('embaldes')}
+                    style={{
+                      padding: '0.75rem 1rem',
+                      background: '#fff',
+                      color: '#333',
+                      border: '1px solid #ddd',
+                      borderRadius: '4px',
+                      cursor: 'pointer',
+                      fontWeight: 600,
+                      fontSize: '0.95rem',
+                      transition: 'all 0.2s ease'
+                    }}
+                    onMouseEnter={(e) => {
+                      const el = e.currentTarget as HTMLElement
+                      el.style.background = '#f5f5f5'
+                      el.style.borderColor = '#999'
+                    }}
+                    onMouseLeave={(e) => {
+                      const el = e.currentTarget as HTMLElement
+                      el.style.background = '#fff'
+                      el.style.borderColor = '#ddd'
+                    }}
+                  >
+                    📦 Lista de Separação
                   </button>
                 </div>
               </div>
@@ -3005,6 +3031,42 @@ function App() {
         </header>
         <main className="container main-content">
           <FornecedoresManager />
+        </main>
+      </div>
+    )
+  }
+
+  // ===== PÁGINA EMBALDES =====
+  if (pagina === 'embaldes') {
+    return (
+      <div className="app">
+        <header className="header">
+          <div className="container">
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div>
+                <h1>📦 LISTA DE SEPARAÇÃO (EMBALDES)</h1>
+                <p>Gerencie listas de separação para envio ao Marketplace</p>
+              </div>
+              <button
+                onClick={() => setPagina('inicial')}
+                style={{
+                  padding: '0.6rem 1.2rem',
+                  backgroundColor: '#f0f0f0',
+                  color: '#1a1a1a',
+                  border: '1px solid #ddd',
+                  borderRadius: '4px',
+                  cursor: 'pointer',
+                  fontWeight: 'bold',
+                  fontSize: '0.9rem'
+                }}
+              >
+                ← Voltar
+              </button>
+            </div>
+          </div>
+        </header>
+        <main className="container main-content">
+          <EmbaldesManager />
         </main>
       </div>
     )
