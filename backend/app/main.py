@@ -1648,6 +1648,164 @@ async def atualizar_data_limite_embale(request: Request):
         db.close()
 
 
+def _resolver_olist_para_item(item):
+    """
+    Dado um ItemEmbaleFU, resolve o produto Olist correspondente.
+    Retorna (produto_id, nome_olist) ou (None, None) se não encontrar.
+    1) Usa o vínculo já salvo (olist_produto_id), se houver.
+    2) Senão, busca na Olist pelo SKU (inclui variações via ?codigo=).
+    """
+    if item.olist_produto_id:
+        return item.olist_produto_id, (item.olist_nome or "")
+
+    sku = (item.sku_inbound or "").strip()
+    if not sku:
+        return None, None
+
+    try:
+        resultados = olist.buscar_produtos(sku, limite_resultados=10)
+    except Exception:
+        return None, None
+
+    # Preferir match de SKU exato (case-insensitive)
+    for p in resultados:
+        if (p.get("sku") or "").strip().lower() == sku.lower():
+            return str(p.get("id")), (p.get("nome") or "")
+
+    # Senão, primeiro resultado
+    if resultados:
+        p = resultados[0]
+        return str(p.get("id")), (p.get("nome") or "")
+
+    return None, None
+
+
+async def revisar_baixa_embale(request: Request):
+    """
+    GET /api/embaldes/{embale_id}/revisao
+    Revisão (SOMENTE LEITURA - não altera nada na Olist).
+    Para cada item do inbound: bate o SKU na Olist, pega o saldo atual e
+    calcula quanto vai pro FULL, o resultado e a falta (se inbound > saldo).
+    """
+    import concurrent.futures
+
+    db = SessionLocal()
+    try:
+        embale_id = int(request.path_params.get("embale_id"))
+        embale = db.query(EmbaleFU).filter(EmbaleFU.id == embale_id).first()
+        if not embale:
+            return JSONResponse({"erro": "Inbound não encontrado"}, status_code=404)
+
+        itens = list(embale.itens)
+
+        # 1) Resolver produto Olist de cada item (usa cache, rápido)
+        resolvidos = {}  # item_id -> (produto_id, nome)
+        for item in itens:
+            resolvidos[item.id] = _resolver_olist_para_item(item)
+
+        # 2) Buscar saldo na Olist em paralelo (só dos que acharam produto)
+        def _get_estoque(produto_id):
+            try:
+                return produto_id, olist.obter_estoque(produto_id)
+            except Exception:
+                return produto_id, None
+
+        ids_para_estoque = {pid for (pid, _) in resolvidos.values() if pid}
+        estoques = {}  # produto_id -> saldo (int) ou None
+        if ids_para_estoque:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=8) as ex:
+                for produto_id, dados in ex.map(_get_estoque, ids_para_estoque):
+                    estoques[produto_id] = (dados or {}).get("saldo") if dados else None
+
+        # 3) Montar revisão
+        revisao = []
+        resumo = {"total": len(itens), "encontrados": 0, "nao_encontrados": 0, "com_falta": 0}
+
+        for item in itens:
+            produto_id, nome_olist = resolvidos[item.id]
+            qtd_full = item.quantidade_separada or 0
+
+            if not produto_id:
+                resumo["nao_encontrados"] += 1
+                revisao.append({
+                    "item_id": item.id,
+                    "titulo_anuncio": item.titulo_anuncio,
+                    "sku_inbound": item.sku_inbound,
+                    "quantidade_full": qtd_full,
+                    "olist_encontrado": False,
+                    "olist_produto_id": None,
+                    "olist_nome": None,
+                    "estoque_atual": None,
+                    "resultado": None,
+                    "falta": None,
+                    "tem_falta": False,
+                    "baixa_aplicada": item.baixa_aplicada or 0,
+                })
+                continue
+
+            resumo["encontrados"] += 1
+            saldo = estoques.get(produto_id)
+
+            if saldo is None:
+                # Achou o produto mas não conseguiu ler o estoque
+                revisao.append({
+                    "item_id": item.id,
+                    "titulo_anuncio": item.titulo_anuncio,
+                    "sku_inbound": item.sku_inbound,
+                    "quantidade_full": qtd_full,
+                    "olist_encontrado": True,
+                    "olist_produto_id": produto_id,
+                    "olist_nome": nome_olist,
+                    "estoque_atual": None,
+                    "resultado": None,
+                    "falta": None,
+                    "tem_falta": False,
+                    "estoque_indisponivel": True,
+                    "baixa_aplicada": item.baixa_aplicada or 0,
+                })
+                continue
+
+            falta = max(0, qtd_full - saldo)
+            tem_falta = falta > 0
+            if tem_falta:
+                resumo["com_falta"] += 1
+
+            # Quanto dá pra baixar de fato (nunca negativo)
+            disponivel_para_baixa = max(0, saldo)
+
+            revisao.append({
+                "item_id": item.id,
+                "titulo_anuncio": item.titulo_anuncio,
+                "sku_inbound": item.sku_inbound,
+                "quantidade_full": qtd_full,
+                "olist_encontrado": True,
+                "olist_produto_id": produto_id,
+                "olist_nome": nome_olist,
+                "estoque_atual": saldo,
+                # Sem falta: baixa = qtd_full, resultado = saldo - qtd_full
+                # Com falta: baixa proposta = tudo que tem (>=0); usuário declara a qtd
+                "baixa_proposta": qtd_full if not tem_falta else disponivel_para_baixa,
+                "resultado": (saldo - qtd_full) if not tem_falta else None,
+                "falta": falta,
+                "tem_falta": tem_falta,
+                "baixa_aplicada": item.baixa_aplicada or 0,
+            })
+
+        return JSONResponse({
+            "embale_id": embale.id,
+            "nome_embalde": embale.nome_embalde,
+            "numero_inbound": embale.numero_inbound,
+            "status": embale.status,
+            "resumo": resumo,
+            "itens": revisao,
+        })
+
+    except Exception as e:
+        return JSONResponse({"erro": str(e)}, status_code=500)
+    finally:
+        db.close()
+
+
 async def encerrar_embale(request: Request):
     """
     POST /api/embaldes/{embale_id}/encerrar
@@ -1723,6 +1881,7 @@ routes = [
     Route("/api/embaldes", listar_embaldes, methods=["GET"]),
     Route("/api/embaldes/{embale_id}", obter_embale, methods=["GET"]),
     Route("/api/embaldes/{embale_id}/data-limite", atualizar_data_limite_embale, methods=["POST"]),
+    Route("/api/embaldes/{embale_id}/revisao", revisar_baixa_embale, methods=["GET"]),
     Route("/api/embaldes/{embale_id}/encerrar", encerrar_embale, methods=["POST"]),
 ]
 

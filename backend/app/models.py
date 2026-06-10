@@ -224,6 +224,14 @@ class ItemEmbaleFU(Base):
     validacao_mensagem = Column(Text, nullable=True)  # Motivo se não validado
     data_validacao = Column(DateTime, nullable=True)
 
+    # Baixa de estoque na Olist (envio pro FULL)
+    olist_estoque_antes = Column(Float, nullable=True)  # Saldo na Olist no momento da baixa
+    quantidade_baixar = Column(Float, nullable=True)  # Qtd a dar baixa (declarada se houver falta)
+    quantidade_baixada = Column(Float, nullable=True)  # Qtd efetivamente baixada na Olist
+    falta = Column(Float, nullable=True)  # Quanto faltou (inbound - estoque), se positivo
+    baixa_aplicada = Column(Integer, default=0)  # 1 = baixa já aplicada na Olist
+    data_baixa = Column(DateTime, nullable=True)
+
     criado_em = Column(DateTime, default=datetime.utcnow)
 
     embalde = relationship("EmbaleFU", back_populates="itens")

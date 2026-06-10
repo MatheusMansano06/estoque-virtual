@@ -31,6 +31,32 @@ interface Inbound {
 
 type Aba = 'processando' | 'encerrado'
 
+interface ItemRevisao {
+  item_id: number
+  titulo_anuncio: string
+  sku_inbound?: string
+  quantidade_full: number
+  olist_encontrado: boolean
+  olist_produto_id?: string | null
+  olist_nome?: string | null
+  estoque_atual?: number | null
+  baixa_proposta?: number | null
+  resultado?: number | null
+  falta?: number | null
+  tem_falta: boolean
+  estoque_indisponivel?: boolean
+  baixa_aplicada: number
+}
+
+interface Revisao {
+  embale_id: number
+  nome_embalde: string
+  numero_inbound?: string
+  status: string
+  resumo: { total: number; encontrados: number; nao_encontrados: number; com_falta: number }
+  itens: ItemRevisao[]
+}
+
 export function EmbaldesManager() {
   const [inbounds, setInbounds] = useState<Inbound[]>([])
   const [loading, setLoading] = useState(false)
@@ -42,6 +68,9 @@ export function EmbaldesManager() {
   const [aba, setAba] = useState<Aba>('processando')
   const [editandoData, setEditandoData] = useState<number | null>(null)
   const [novaData, setNovaData] = useState('')
+  const [revisao, setRevisao] = useState<Revisao | null>(null)
+  const [revisandoId, setRevisandoId] = useState<number | null>(null)
+  const [carregandoRevisao, setCarregandoRevisao] = useState(false)
 
   useEffect(() => {
     carregarInbounds()
@@ -132,6 +161,27 @@ export function EmbaldesManager() {
       setMessage('Data limite atualizada')
     } catch (erro: any) {
       setMessage('Erro: ' + (erro.response?.data?.erro || String(erro)))
+    }
+  }
+
+  const carregarRevisao = async (id: number) => {
+    if (revisandoId === id) {
+      // Toggle: fecha
+      setRevisandoId(null)
+      setRevisao(null)
+      return
+    }
+    try {
+      setCarregandoRevisao(true)
+      setRevisandoId(id)
+      setRevisao(null)
+      const resposta = await api.get(`/embaldes/${id}/revisao`)
+      setRevisao(resposta.data)
+    } catch (erro: any) {
+      setMessage('Erro ao revisar: ' + (erro.response?.data?.erro || String(erro)))
+      setRevisandoId(null)
+    } finally {
+      setCarregandoRevisao(false)
     }
   }
 
@@ -354,7 +404,13 @@ export function EmbaldesManager() {
                 </div>
 
                 {/* Ação */}
-                <div onClick={(e) => e.stopPropagation()}>
+                <div onClick={(e) => e.stopPropagation()} style={{ display: 'flex', gap: '0.5rem', flexDirection: 'column' }}>
+                  <button
+                    onClick={() => carregarRevisao(inb.id)}
+                    style={{ padding: '0.5rem 1rem', background: revisandoId === inb.id ? '#1976D2' : '#fff', color: revisandoId === inb.id ? '#fff' : '#1976D2', border: '1px solid #1976D2', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold', fontSize: '0.85rem', whiteSpace: 'nowrap' }}
+                  >
+                    {revisandoId === inb.id ? 'Fechar revisão' : 'Revisar Olist'}
+                  </button>
                   {inb.status === 'processando' ? (
                     <button
                       onClick={() => encerrarInbound(inb.id)}
@@ -363,12 +419,90 @@ export function EmbaldesManager() {
                       Encerrar
                     </button>
                   ) : (
-                    <span style={{ padding: '0.4rem 0.9rem', background: '#9e9e9e', color: '#fff', borderRadius: '4px', fontSize: '0.82rem', fontWeight: 'bold' }}>
+                    <span style={{ padding: '0.4rem 0.9rem', background: '#9e9e9e', color: '#fff', borderRadius: '4px', fontSize: '0.82rem', fontWeight: 'bold', textAlign: 'center' }}>
                       Encerrado
                     </span>
                   )}
                 </div>
               </div>
+
+              {/* Revisão de baixa na Olist */}
+              {revisandoId === inb.id && (
+                <div style={{ marginTop: '1.5rem', paddingTop: '1.5rem', borderTop: '2px solid #1976D2' }}>
+                  {carregandoRevisao ? (
+                    <div style={{ textAlign: 'center', padding: '2rem', color: '#1976D2', fontWeight: 'bold' }}>
+                      Consultando estoque na Olist, produto por produto... aguarde.
+                    </div>
+                  ) : revisao ? (
+                    <div>
+                      {/* Resumo */}
+                      <div style={{ display: 'flex', gap: '1rem', marginBottom: '1rem', flexWrap: 'wrap' }}>
+                        <div style={{ padding: '0.6rem 1rem', background: '#e3f2fd', borderRadius: '4px', fontSize: '0.85rem' }}>
+                          Total: <strong>{revisao.resumo.total}</strong>
+                        </div>
+                        <div style={{ padding: '0.6rem 1rem', background: '#e8f5e9', borderRadius: '4px', fontSize: '0.85rem' }}>
+                          Achados na Olist: <strong>{revisao.resumo.encontrados}</strong>
+                        </div>
+                        <div style={{ padding: '0.6rem 1rem', background: '#fff3e0', borderRadius: '4px', fontSize: '0.85rem' }}>
+                          Não achados: <strong>{revisao.resumo.nao_encontrados}</strong>
+                        </div>
+                        <div style={{ padding: '0.6rem 1rem', background: '#ffebee', borderRadius: '4px', fontSize: '0.85rem' }}>
+                          Com falta: <strong>{revisao.resumo.com_falta}</strong>
+                        </div>
+                      </div>
+
+                      <div style={{ fontSize: '0.8rem', color: '#666', marginBottom: '0.75rem', fontStyle: 'italic' }}>
+                        Revisão (somente leitura) — nada foi alterado na Olist ainda.
+                      </div>
+
+                      {/* Tabela */}
+                      <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr 1fr 1fr', gap: '0.5rem', padding: '0.6rem 0.8rem', background: '#f5f5f5', borderRadius: '4px 4px 0 0', fontSize: '0.75rem', fontWeight: 'bold', color: '#666', textTransform: 'uppercase' }}>
+                        <div>Produto / SKU</div>
+                        <div style={{ textAlign: 'center' }}>Estoque Olist</div>
+                        <div style={{ textAlign: 'center' }}>Vai pro FULL</div>
+                        <div style={{ textAlign: 'center' }}>Resultado</div>
+                        <div style={{ textAlign: 'center' }}>Situação</div>
+                      </div>
+                      <div style={{ maxHeight: '500px', overflowY: 'auto', border: '1px solid #eee', borderTop: 'none' }}>
+                        {revisao.itens.map((it) => {
+                          const naoAchado = !it.olist_encontrado
+                          const semEstoque = it.olist_encontrado && it.estoque_indisponivel
+                          const bg = naoAchado ? '#fff8f0' : it.tem_falta ? '#ffebee' : '#fff'
+                          return (
+                            <div
+                              key={it.item_id}
+                              style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr 1fr 1fr', gap: '0.5rem', padding: '0.7rem 0.8rem', background: bg, borderBottom: '1px solid #f0f0f0', fontSize: '0.85rem', alignItems: 'center' }}
+                            >
+                              <div>
+                                <div style={{ fontWeight: 600 }}>{it.titulo_anuncio}</div>
+                                <div style={{ fontSize: '0.78rem', color: '#666' }}>SKU: {it.sku_inbound || '—'}</div>
+                              </div>
+                              <div style={{ textAlign: 'center', fontWeight: 'bold' }}>
+                                {naoAchado ? '—' : semEstoque ? '?' : it.estoque_atual}
+                              </div>
+                              <div style={{ textAlign: 'center' }}>{Math.round(it.quantidade_full)}</div>
+                              <div style={{ textAlign: 'center', fontWeight: 'bold', color: '#2e7d32' }}>
+                                {naoAchado || semEstoque ? '—' : it.tem_falta ? '—' : it.resultado}
+                              </div>
+                              <div style={{ textAlign: 'center' }}>
+                                {naoAchado ? (
+                                  <span style={{ color: '#ef6c00', fontWeight: 'bold', fontSize: '0.8rem' }}>Não achado na Olist</span>
+                                ) : semEstoque ? (
+                                  <span style={{ color: '#999', fontSize: '0.8rem' }}>Estoque indisponível</span>
+                                ) : it.tem_falta ? (
+                                  <span style={{ color: '#c62828', fontWeight: 'bold', fontSize: '0.8rem' }}>Falta {Math.round(it.falta || 0)}</span>
+                                ) : (
+                                  <span style={{ color: '#2e7d32', fontWeight: 'bold', fontSize: '0.8rem' }}>OK</span>
+                                )}
+                              </div>
+                            </div>
+                          )
+                        })}
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
+              )}
 
               {/* Detalhes expandidos */}
               {inboundSelecionado?.id === inb.id && (
