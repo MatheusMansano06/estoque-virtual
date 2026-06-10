@@ -1389,9 +1389,18 @@ async def upload_embale(request: Request):
         form = await request.form()
         arquivo = form.get("arquivo")
         nome_embale = form.get("nome_embale") or "Inbound sem nome"
+        data_limite_str = form.get("data_limite") or ""
 
         if not arquivo:
             return JSONResponse({"erro": "Arquivo não fornecido"}, status_code=400)
+
+        # Parsear data limite (formato YYYY-MM-DD do input HTML)
+        data_limite = None
+        if data_limite_str:
+            try:
+                data_limite = datetime.strptime(data_limite_str[:10], "%Y-%m-%d")
+            except ValueError:
+                return JSONResponse({"erro": "Data limite inválida"}, status_code=400)
 
         # Validar tipo de arquivo
         if not arquivo.filename.lower().endswith('.pdf'):
@@ -1424,7 +1433,9 @@ async def upload_embale(request: Request):
             numero_inbound=numero_inbound,
             total_unidades=total_unidades,
             arquivo_original=arquivo.filename,
-            arquivo_uuid=arquivo_uuid
+            arquivo_uuid=arquivo_uuid,
+            data_limite=data_limite,
+            status="processando"
         )
         db.add(embale)
         db.commit()
@@ -1536,6 +1547,8 @@ async def listar_embaldes(request: Request):
                     "total_unidades": e.total_unidades,
                     "arquivo_original": e.arquivo_original,
                     "data_upload": e.data_upload.isoformat(),
+                    "data_limite": e.data_limite.isoformat() if e.data_limite else None,
+                    "data_encerramento": e.data_encerramento.isoformat() if e.data_encerramento else None,
                     "status": e.status,
                     "qtd_items": len(e.itens),
                     "qtd_validados": sum(1 for i in e.itens if i.validado == 1)
@@ -1571,6 +1584,8 @@ async def obter_embale(request: Request):
             "total_unidades": embale.total_unidades,
             "arquivo_original": embale.arquivo_original,
             "data_upload": embale.data_upload.isoformat(),
+            "data_limite": embale.data_limite.isoformat() if embale.data_limite else None,
+            "data_encerramento": embale.data_encerramento.isoformat() if embale.data_encerramento else None,
             "status": embale.status,
             "itens": [
                 {
@@ -1590,6 +1605,78 @@ async def obter_embale(request: Request):
         })
 
     except Exception as e:
+        return JSONResponse({"erro": str(e)}, status_code=500)
+    finally:
+        db.close()
+
+
+async def atualizar_data_limite_embale(request: Request):
+    """
+    POST /api/embaldes/{embale_id}/data-limite
+    Atualiza a data limite (deadline de envio do FULL) de um inbound.
+    Body JSON: {"data_limite": "YYYY-MM-DD"}  (ou null para remover)
+    """
+    db = SessionLocal()
+    try:
+        embale_id = int(request.path_params.get("embale_id"))
+        body = await request.json()
+        data_limite_str = body.get("data_limite")
+
+        embale = db.query(EmbaleFU).filter(EmbaleFU.id == embale_id).first()
+        if not embale:
+            return JSONResponse({"erro": "Inbound não encontrado"}, status_code=404)
+
+        if data_limite_str:
+            try:
+                embale.data_limite = datetime.strptime(data_limite_str[:10], "%Y-%m-%d")
+            except ValueError:
+                return JSONResponse({"erro": "Data limite inválida"}, status_code=400)
+        else:
+            embale.data_limite = None
+
+        db.commit()
+        return JSONResponse({
+            "id": embale.id,
+            "data_limite": embale.data_limite.isoformat() if embale.data_limite else None,
+            "mensagem": "Data limite atualizada"
+        })
+
+    except Exception as e:
+        db.rollback()
+        return JSONResponse({"erro": str(e)}, status_code=500)
+    finally:
+        db.close()
+
+
+async def encerrar_embale(request: Request):
+    """
+    POST /api/embaldes/{embale_id}/encerrar
+    Encerra manualmente um inbound (para de descontar do estoque).
+    """
+    db = SessionLocal()
+    try:
+        embale_id = int(request.path_params.get("embale_id"))
+
+        embale = db.query(EmbaleFU).filter(EmbaleFU.id == embale_id).first()
+        if not embale:
+            return JSONResponse({"erro": "Inbound não encontrado"}, status_code=404)
+
+        if embale.status == "encerrado":
+            return JSONResponse({"erro": "Inbound já está encerrado"}, status_code=400)
+
+        embale.status = "encerrado"
+        embale.data_encerramento = datetime.utcnow()
+        db.commit()
+
+        return JSONResponse({
+            "id": embale.id,
+            "status": embale.status,
+            "data_encerramento": embale.data_encerramento.isoformat(),
+            "mensagem": "Inbound encerrado"
+        })
+
+    except Exception as e:
+        db.rollback()
         return JSONResponse({"erro": str(e)}, status_code=500)
     finally:
         db.close()
@@ -1631,13 +1718,23 @@ routes = [
     Route("/api/olist/sugestao-vinculo", olist_sugestao_vinculo, methods=["GET"]),
     Route("/api/olist/vinculos", olist_listar_vinculos, methods=["GET"]),
     Route("/api/olist/vinculos/deletar", olist_deletar_vinculo, methods=["POST"]),
-    # Embaldes / Lista de Separação para FU
+    # Inbound / Lista de Separação para FU
     Route("/api/embaldes/upload", upload_embale, methods=["POST"]),
     Route("/api/embaldes", listar_embaldes, methods=["GET"]),
     Route("/api/embaldes/{embale_id}", obter_embale, methods=["GET"]),
+    Route("/api/embaldes/{embale_id}/data-limite", atualizar_data_limite_embale, methods=["POST"]),
+    Route("/api/embaldes/{embale_id}/encerrar", encerrar_embale, methods=["POST"]),
 ]
 
-app = Starlette(routes=routes)
+async def _on_startup():
+    """Inicia o scheduler de jobs (encerramento de inbounds, notificações)."""
+    try:
+        iniciar_scheduler()
+    except Exception as e:
+        print(f"[ERRO] Falha ao iniciar scheduler: {e}")
+
+
+app = Starlette(routes=routes, on_startup=[_on_startup])
 
 # Add CORS
 app.add_middleware(

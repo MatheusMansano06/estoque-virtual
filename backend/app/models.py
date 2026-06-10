@@ -190,7 +190,9 @@ class EmbaleFU(Base):
     arquivo_original = Column(String(255))
     arquivo_uuid = Column(String(255), unique=True)  # Nome único no sistema
     data_upload = Column(DateTime, default=datetime.utcnow)
-    status = Column(String(50), default="ativo")  # ativo, enviado, processado, cancelado
+    data_limite = Column(DateTime, nullable=True)  # Quando o FULL será enviado (deadline)
+    data_encerramento = Column(DateTime, nullable=True)  # Quando foi efetivamente encerrado
+    status = Column(String(50), default="processando")  # processando, encerrado
     observacoes = Column(Text, nullable=True)
 
     itens = relationship("ItemEmbaleFU", back_populates="embalde", cascade="all, delete-orphan")

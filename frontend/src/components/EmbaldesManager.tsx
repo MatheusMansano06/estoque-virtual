@@ -21,19 +21,27 @@ interface Inbound {
   total_unidades?: number
   arquivo_original: string
   data_upload: string
+  data_limite?: string | null
+  data_encerramento?: string | null
   status: string
   qtd_items: number
   qtd_validados: number
   itens?: ItemInbound[]
 }
 
+type Aba = 'processando' | 'encerrado'
+
 export function EmbaldesManager() {
   const [inbounds, setInbounds] = useState<Inbound[]>([])
   const [loading, setLoading] = useState(false)
   const [message, setMessage] = useState('')
   const [nomeInbound, setNomeInbound] = useState('')
+  const [dataLimite, setDataLimite] = useState('')
   const [arquivo, setArquivo] = useState<File | null>(null)
   const [inboundSelecionado, setInboundSelecionado] = useState<Inbound | null>(null)
+  const [aba, setAba] = useState<Aba>('processando')
+  const [editandoData, setEditandoData] = useState<number | null>(null)
+  const [novaData, setNovaData] = useState('')
 
   useEffect(() => {
     carregarInbounds()
@@ -42,7 +50,7 @@ export function EmbaldesManager() {
   const carregarInbounds = async () => {
     try {
       setLoading(true)
-      const resposta = await api.get('/embaldes?limit=100')
+      const resposta = await api.get('/embaldes?limit=200')
       setInbounds(resposta.data.items)
     } catch (erro) {
       setMessage('Erro ao carregar inbounds: ' + String(erro))
@@ -58,7 +66,6 @@ export function EmbaldesManager() {
       setMessage('Selecione um arquivo PDF')
       return
     }
-
     if (!nomeInbound.trim()) {
       setMessage('Digite um nome para o inbound')
       return
@@ -71,6 +78,7 @@ export function EmbaldesManager() {
       const formData = new FormData()
       formData.append('arquivo', arquivo)
       formData.append('nome_embale', nomeInbound)
+      if (dataLimite) formData.append('data_limite', dataLimite)
 
       const resposta = await api.post('/embaldes/upload', formData, {
         headers: { 'Content-Type': 'multipart/form-data' }
@@ -79,6 +87,7 @@ export function EmbaldesManager() {
       const d = resposta.data
       setMessage(`Inbound ${d.numero_inbound || ''} processado: ${d.itens_validados}/${d.itens_processados} items vinculados`)
       setNomeInbound('')
+      setDataLimite('')
       setArquivo(null)
 
       await carregarInbounds()
@@ -91,7 +100,6 @@ export function EmbaldesManager() {
   }
 
   const carregarDetalhes = async (inb: Inbound) => {
-    // Toggle: fecha se já estiver aberto
     if (inboundSelecionado?.id === inb.id) {
       setInboundSelecionado(null)
       return
@@ -104,9 +112,41 @@ export function EmbaldesManager() {
     }
   }
 
+  const encerrarInbound = async (id: number) => {
+    if (!confirm('Encerrar este inbound? Ele vai parar de descontar do estoque nas próximas notas.')) return
+    try {
+      await api.post(`/embaldes/${id}/encerrar`)
+      await carregarInbounds()
+      setMessage('Inbound encerrado')
+    } catch (erro: any) {
+      setMessage('Erro: ' + (erro.response?.data?.erro || String(erro)))
+    }
+  }
+
+  const salvarData = async (id: number) => {
+    try {
+      await api.post(`/embaldes/${id}/data-limite`, { data_limite: novaData || null })
+      setEditandoData(null)
+      setNovaData('')
+      await carregarInbounds()
+      setMessage('Data limite atualizada')
+    } catch (erro: any) {
+      setMessage('Erro: ' + (erro.response?.data?.erro || String(erro)))
+    }
+  }
+
+  const formatarData = (iso?: string | null) => {
+    if (!iso) return null
+    return new Date(iso).toLocaleDateString('pt-BR')
+  }
+
+  const inboundsFiltrados = inbounds.filter((i) => i.status === aba)
+  const countProcessando = inbounds.filter((i) => i.status === 'processando').length
+  const countEncerrado = inbounds.filter((i) => i.status === 'encerrado').length
+
   return (
     <div style={{ padding: '2rem' }}>
-      <h2>Lista de Separação (Inbound ML FULL)</h2>
+      <h2>Inbound (Lista de Separação ML FULL)</h2>
 
       {/* Formulário de Upload */}
       <div style={{
@@ -123,37 +163,39 @@ export function EmbaldesManager() {
         </p>
 
         <form onSubmit={handleUpload}>
-          <div style={{ marginBottom: '1rem' }}>
-            <label style={{ fontWeight: 'bold', display: 'block', marginBottom: '0.5rem' }}>
-              Nome do Inbound:
-            </label>
-            <input
-              type="text"
-              placeholder="Ex: Inbound Semana 1"
-              value={nomeInbound}
-              onChange={(e) => setNomeInbound(e.target.value)}
-              disabled={loading}
-              style={{
-                width: '100%',
-                padding: '0.75rem',
-                border: '1px solid #ddd',
-                borderRadius: '4px',
-                fontSize: '1rem'
-              }}
-            />
+          <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: '1rem', marginBottom: '1rem' }}>
+            <div>
+              <label style={{ fontWeight: 'bold', display: 'block', marginBottom: '0.5rem' }}>
+                Nome do Inbound:
+              </label>
+              <input
+                type="text"
+                placeholder="Ex: Inbound Semana 1"
+                value={nomeInbound}
+                onChange={(e) => setNomeInbound(e.target.value)}
+                disabled={loading}
+                style={{ width: '100%', padding: '0.75rem', border: '1px solid #ddd', borderRadius: '4px', fontSize: '1rem' }}
+              />
+            </div>
+            <div>
+              <label style={{ fontWeight: 'bold', display: 'block', marginBottom: '0.5rem' }}>
+                Data de envio do FULL:
+              </label>
+              <input
+                type="date"
+                value={dataLimite}
+                onChange={(e) => setDataLimite(e.target.value)}
+                disabled={loading}
+                style={{ width: '100%', padding: '0.75rem', border: '1px solid #ddd', borderRadius: '4px', fontSize: '1rem' }}
+              />
+            </div>
           </div>
 
           <div style={{ marginBottom: '1rem' }}>
             <label style={{ fontWeight: 'bold', display: 'block', marginBottom: '0.5rem' }}>
               Arquivo PDF:
             </label>
-            <div style={{
-              border: '2px dashed #ccc',
-              borderRadius: '4px',
-              padding: '1.5rem',
-              textAlign: 'center',
-              backgroundColor: '#fff'
-            }}>
+            <div style={{ border: '2px dashed #ccc', borderRadius: '4px', padding: '1.5rem', textAlign: 'center', backgroundColor: '#fff' }}>
               <input
                 type="file"
                 accept=".pdf"
@@ -164,13 +206,9 @@ export function EmbaldesManager() {
               />
               <label htmlFor="pdf-input" style={{ cursor: 'pointer', display: 'block' }}>
                 {arquivo ? (
-                  <div style={{ color: '#2e7d32', fontWeight: 'bold' }}>
-                    {arquivo.name}
-                  </div>
+                  <div style={{ color: '#2e7d32', fontWeight: 'bold' }}>{arquivo.name}</div>
                 ) : (
-                  <div style={{ color: '#666' }}>
-                    Clique para selecionar um PDF
-                  </div>
+                  <div style={{ color: '#666' }}>Clique para selecionar um PDF</div>
                 )}
               </label>
             </div>
@@ -208,60 +246,133 @@ export function EmbaldesManager() {
         )}
       </div>
 
-      {/* Lista de Inbounds */}
-      <h3>Inbounds Subidos</h3>
+      {/* Abas */}
+      <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1.5rem', borderBottom: '2px solid #eee' }}>
+        <button
+          onClick={() => setAba('processando')}
+          style={{
+            padding: '0.75rem 1.5rem',
+            border: 'none',
+            background: 'none',
+            cursor: 'pointer',
+            fontWeight: 'bold',
+            fontSize: '1rem',
+            color: aba === 'processando' ? '#1976D2' : '#999',
+            borderBottom: aba === 'processando' ? '3px solid #1976D2' : '3px solid transparent',
+            marginBottom: '-2px'
+          }}
+        >
+          Processando ({countProcessando})
+        </button>
+        <button
+          onClick={() => setAba('encerrado')}
+          style={{
+            padding: '0.75rem 1.5rem',
+            border: 'none',
+            background: 'none',
+            cursor: 'pointer',
+            fontWeight: 'bold',
+            fontSize: '1rem',
+            color: aba === 'encerrado' ? '#1976D2' : '#999',
+            borderBottom: aba === 'encerrado' ? '3px solid #1976D2' : '3px solid transparent',
+            marginBottom: '-2px'
+          }}
+        >
+          Encerrados ({countEncerrado})
+        </button>
+      </div>
 
-      {inbounds.length === 0 ? (
+      {/* Lista de Inbounds */}
+      {inboundsFiltrados.length === 0 ? (
         <p style={{ color: '#999', textAlign: 'center', padding: '2rem' }}>
-          Nenhum inbound subido ainda.
+          {aba === 'processando' ? 'Nenhum inbound processando.' : 'Nenhum inbound encerrado.'}
         </p>
       ) : (
         <div style={{ display: 'grid', gap: '1rem' }}>
-          {inbounds.map((inb) => (
+          {inboundsFiltrados.map((inb) => (
             <div
               key={inb.id}
               style={{
                 border: '1px solid #ddd',
                 borderRadius: '8px',
                 padding: '1.5rem',
-                cursor: 'pointer',
-                backgroundColor: '#fff'
+                backgroundColor: inb.status === 'encerrado' ? '#fafafa' : '#fff'
               }}
-              onClick={() => carregarDetalhes(inb)}
             >
-              <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr', gap: '1.5rem', alignItems: 'center' }}>
+              <div
+                style={{ display: 'grid', gridTemplateColumns: '2fr 1.5fr 1fr auto', gap: '1.5rem', alignItems: 'center', cursor: 'pointer' }}
+                onClick={() => carregarDetalhes(inb)}
+              >
                 <div>
                   <div style={{ fontWeight: 'bold', fontSize: '1.1rem' }}>{inb.nome_embalde}</div>
                   <div style={{ color: '#666', fontSize: '0.85rem', marginTop: '0.4rem' }}>
                     {inb.numero_inbound ? `Frete #${inb.numero_inbound}` : 'Sem número'}
-                    {' · '}
-                    {new Date(inb.data_upload).toLocaleDateString('pt-BR')}
+                    {inb.total_unidades ? ` · ${Math.round(inb.total_unidades)} un` : ''}
                   </div>
                 </div>
-                <div style={{ color: '#666', fontSize: '0.85rem' }}>
-                  {inb.total_unidades ? `${Math.round(inb.total_unidades)} unidades` : ''}
+
+                {/* Data limite */}
+                <div style={{ fontSize: '0.85rem' }} onClick={(e) => e.stopPropagation()}>
+                  {editandoData === inb.id ? (
+                    <div style={{ display: 'flex', gap: '0.4rem', alignItems: 'center' }}>
+                      <input
+                        type="date"
+                        value={novaData}
+                        onChange={(e) => setNovaData(e.target.value)}
+                        style={{ padding: '0.4rem', border: '1px solid #ddd', borderRadius: '4px' }}
+                      />
+                      <button onClick={() => salvarData(inb.id)} style={{ padding: '0.4rem 0.7rem', background: '#1976D2', color: '#fff', border: 'none', borderRadius: '4px', cursor: 'pointer' }}>OK</button>
+                      <button onClick={() => { setEditandoData(null); setNovaData('') }} style={{ padding: '0.4rem 0.7rem', background: '#eee', border: 'none', borderRadius: '4px', cursor: 'pointer' }}>x</button>
+                    </div>
+                  ) : (
+                    <div>
+                      <span style={{ color: '#666' }}>Envio FULL: </span>
+                      <strong>{formatarData(inb.data_limite) || 'sem data'}</strong>
+                      {inb.status === 'processando' && (
+                        <button
+                          onClick={() => { setEditandoData(inb.id); setNovaData(inb.data_limite?.slice(0, 10) || '') }}
+                          style={{ marginLeft: '0.5rem', padding: '0.2rem 0.5rem', background: 'none', border: '1px solid #ddd', borderRadius: '4px', cursor: 'pointer', fontSize: '0.78rem' }}
+                        >
+                          editar
+                        </button>
+                      )}
+                      {inb.status === 'encerrado' && inb.data_encerramento && (
+                        <div style={{ color: '#999', marginTop: '0.2rem' }}>
+                          Encerrado em {formatarData(inb.data_encerramento)}
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
-                <div style={{ textAlign: 'right' }}>
-                  <div style={{
-                    fontSize: '1.2rem',
-                    fontWeight: 'bold',
-                    color: inb.qtd_validados === inb.qtd_items ? '#2e7d32' : '#ef6c00'
-                  }}>
+
+                {/* Vinculados */}
+                <div style={{ textAlign: 'center' }}>
+                  <div style={{ fontSize: '1.1rem', fontWeight: 'bold', color: inb.qtd_validados === inb.qtd_items ? '#2e7d32' : '#ef6c00' }}>
                     {inb.qtd_validados}/{inb.qtd_items}
                   </div>
-                  <div style={{ fontSize: '0.8rem', color: '#666' }}>
-                    items vinculados
-                  </div>
+                  <div style={{ fontSize: '0.78rem', color: '#666' }}>vinculados</div>
+                </div>
+
+                {/* Ação */}
+                <div onClick={(e) => e.stopPropagation()}>
+                  {inb.status === 'processando' ? (
+                    <button
+                      onClick={() => encerrarInbound(inb.id)}
+                      style={{ padding: '0.5rem 1rem', background: '#fff', color: '#c62828', border: '1px solid #c62828', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold', fontSize: '0.85rem', whiteSpace: 'nowrap' }}
+                    >
+                      Encerrar
+                    </button>
+                  ) : (
+                    <span style={{ padding: '0.4rem 0.9rem', background: '#9e9e9e', color: '#fff', borderRadius: '4px', fontSize: '0.82rem', fontWeight: 'bold' }}>
+                      Encerrado
+                    </span>
+                  )}
                 </div>
               </div>
 
               {/* Detalhes expandidos */}
               {inboundSelecionado?.id === inb.id && (
-                <div style={{
-                  marginTop: '1.5rem',
-                  paddingTop: '1.5rem',
-                  borderTop: '1px solid #eee'
-                }}>
+                <div style={{ marginTop: '1.5rem', paddingTop: '1.5rem', borderTop: '1px solid #eee' }}>
                   <div style={{ display: 'grid', gap: '0.75rem' }}>
                     {inboundSelecionado.itens?.map((item) => (
                       <div
@@ -275,9 +386,7 @@ export function EmbaldesManager() {
                       >
                         <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr auto', gap: '1rem', alignItems: 'center' }}>
                           <div>
-                            <div style={{ fontWeight: 'bold', fontSize: '0.95rem' }}>
-                              {item.titulo_anuncio}
-                            </div>
+                            <div style={{ fontWeight: 'bold', fontSize: '0.95rem' }}>{item.titulo_anuncio}</div>
                             <div style={{ fontSize: '0.82rem', color: '#666', marginTop: '0.3rem' }}>
                               SKU: <strong>{item.sku_inbound || '—'}</strong>
                               {item.codigo_ml ? ` · ML: ${item.codigo_ml}` : ''}
@@ -289,9 +398,7 @@ export function EmbaldesManager() {
                             )}
                           </div>
                           <div style={{ textAlign: 'center' }}>
-                            <div style={{ fontWeight: 'bold', fontSize: '1.1rem' }}>
-                              {Math.round(item.quantidade_separada)}
-                            </div>
+                            <div style={{ fontWeight: 'bold', fontSize: '1.1rem' }}>{Math.round(item.quantidade_separada)}</div>
                             <div style={{ fontSize: '0.78rem', color: '#666' }}>unidades</div>
                           </div>
                           <div style={{

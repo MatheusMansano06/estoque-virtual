@@ -10,12 +10,45 @@ import logging
 from database import SessionLocal
 from app.models import (
     ItemEstoque, StatusEstoque, ConfiguracaoEstoqueMinimo,
-    HistoricoCompra, Fornecedor, NotificacaoFornecedor
+    HistoricoCompra, Fornecedor, NotificacaoFornecedor, EmbaleFU
 )
 import urllib.parse
 
 logger = logging.getLogger(__name__)
 scheduler = BackgroundScheduler()
+
+
+def encerrar_inbounds_vencidos():
+    """
+    Tarefa: encerra automaticamente inbounds cuja data limite já passou.
+    Inbounds encerrados param de descontar do estoque na conferência.
+    Roda periodicamente.
+    """
+    db = SessionLocal()
+    try:
+        agora = datetime.utcnow()
+        vencidos = db.query(EmbaleFU).filter(
+            EmbaleFU.status == "processando",
+            EmbaleFU.data_limite != None,
+            EmbaleFU.data_limite <= agora
+        ).all()
+
+        if not vencidos:
+            return
+
+        for inbound in vencidos:
+            inbound.status = "encerrado"
+            inbound.data_encerramento = agora
+            logger.info(f"[JOB] Inbound #{inbound.numero_inbound} (id={inbound.id}) encerrado automaticamente (data limite vencida)")
+
+        db.commit()
+        logger.info(f"[JOB] {len(vencidos)} inbound(s) encerrado(s) automaticamente")
+
+    except Exception as e:
+        db.rollback()
+        logger.error(f"[JOB] Erro ao encerrar inbounds vencidos: {str(e)}")
+    finally:
+        db.close()
 
 
 def verificar_e_notificar_fornecedores():
@@ -157,6 +190,15 @@ def iniciar_scheduler():
             id='check_estoque_minimo',
             name='Verificação de Estoque Baixo e Notificação de Fornecedores'
         )
+        # Encerrar inbounds vencidos a cada hora
+        scheduler.add_job(
+            encerrar_inbounds_vencidos,
+            'interval',
+            hours=1,
+            id='encerrar_inbounds_vencidos',
+            name='Encerramento automático de inbounds vencidos'
+        )
         scheduler.start()
         logger.info("[SCHEDULER] Agendador iniciado com sucesso")
         logger.info("[SCHEDULER] Job 'check_estoque_minimo' agendado para 08:00 todos os dias")
+        logger.info("[SCHEDULER] Job 'encerrar_inbounds_vencidos' agendado a cada 1 hora")
