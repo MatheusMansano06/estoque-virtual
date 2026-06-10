@@ -118,6 +118,9 @@ function App() {
   const [deletando, setDeletando] = useState(false)
   const [downloadandoPdf, setDownloadandoPdf] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  // Debounce da busca de produtos Olist (evita 1 request por tecla)
+  const buscaTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const [buscandoSKU, setBuscandoSKU] = useState(false)
 
   // Carregar notas ao iniciar
   useEffect(() => {
@@ -133,7 +136,7 @@ function App() {
       setSugestaoDispensada(false)
       const codigo = (produtoSelecionado as any).codigo_produto || ''
       const descricao = (produtoSelecionado as any).descricao || ''
-      fetch(`http://localhost:8000/api/olist/sugestao-vinculo?codigo=${encodeURIComponent(codigo)}&descricao=${encodeURIComponent(descricao)}`)
+      fetch(`http://127.0.0.1:8000/api/olist/sugestao-vinculo?codigo=${encodeURIComponent(codigo)}&descricao=${encodeURIComponent(descricao)}`)
         .then((r) => r.json())
         .then((d) => { if (d.encontrado) setSugestaoVinculo(d.vinculo) })
         .catch(() => {})
@@ -145,7 +148,7 @@ function App() {
     if (!sugestaoVinculo) return
     const termo = sugestaoVinculo.olist_sku || sugestaoVinculo.nf_codigo || ''
     try {
-      const res = await fetch(`http://localhost:8000/api/olist/produtos?q=${encodeURIComponent(termo)}`)
+      const res = await fetch(`http://127.0.0.1:8000/api/olist/produtos?q=${encodeURIComponent(termo)}`)
       const data = await res.json()
       const lista = data.produtos || []
       const prod = lista.find((p: any) => String(p.id) === String(sugestaoVinculo.olist_produto_id)) || lista[0]
@@ -171,7 +174,7 @@ function App() {
 
   const loadVinculos = async () => {
     try {
-      const res = await fetch('http://localhost:8000/api/olist/vinculos')
+      const res = await fetch('http://127.0.0.1:8000/api/olist/vinculos')
       const data = await res.json()
       setListaVinculos(data.vinculos || [])
     } catch (err) {
@@ -187,7 +190,7 @@ function App() {
   const deletarVinculo = async (id: number) => {
     if (!window.confirm('Remover este vínculo salvo? Ele não será mais sugerido automaticamente.')) return
     try {
-      await fetch('http://localhost:8000/api/olist/vinculos/deletar', {
+      await fetch('http://127.0.0.1:8000/api/olist/vinculos/deletar', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ id }),
@@ -223,7 +226,7 @@ function App() {
 
     setDeletando(true)
     try {
-      await fetch('http://localhost:8000/api/notas-fiscais/deletar-multiplas', {
+      await fetch('http://127.0.0.1:8000/api/notas-fiscais/deletar-multiplas', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ nf_ids: Array.from(notasSelecionadas) }),
@@ -248,7 +251,7 @@ function App() {
 
   const loadNotas = async () => {
     try {
-      const res = await fetch('http://localhost:8000/api/notas-fiscais')
+      const res = await fetch('http://127.0.0.1:8000/api/notas-fiscais')
       const data = await res.json()
       setNotas(data.items || [])
       setNotasSelecionadas(new Set())
@@ -259,7 +262,7 @@ function App() {
 
   const loadEstoque = async () => {
     try {
-      const res = await fetch('http://localhost:8000/api/estoque-virtual')
+      const res = await fetch('http://127.0.0.1:8000/api/estoque-virtual')
       const data = await res.json()
       setEstoque(data.produtos || [])
     } catch (err) {
@@ -269,7 +272,7 @@ function App() {
 
   const loadDivergencias = async () => {
     try {
-      const res = await fetch('http://localhost:8000/api/divergencias')
+      const res = await fetch('http://127.0.0.1:8000/api/divergencias')
       const data = await res.json()
       setDivergencias(data.divergencias || [])
     } catch (err) {
@@ -325,7 +328,7 @@ function App() {
   // Abre o modal de detalhe da nota (busca dados frescos)
   const abrirDetalheNota = async (notaId: number) => {
     try {
-      const res = await fetch(`http://localhost:8000/api/notas-fiscais/${notaId}`)
+      const res = await fetch(`http://127.0.0.1:8000/api/notas-fiscais/${notaId}`)
       const data: NotaFiscal = await res.json()
       setNotaDetalheAberta(data)
       setNotaSelecionada(data)
@@ -353,7 +356,7 @@ function App() {
     !nota ? [] : divergencias.filter((d) => String(d.numero_nf) === String(nota.numero_nf))
 
   const resolverDivergenciaItem = async (itemId: number) => {
-    const res = await fetch('http://localhost:8000/api/resolver-divergencia', {
+    const res = await fetch('http://127.0.0.1:8000/api/resolver-divergencia', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ item_id: itemId })
     })
@@ -363,7 +366,7 @@ function App() {
 
   const deletarDivergenciaItem = async (itemId: number) => {
     if (!window.confirm('Tem certeza que deseja deletar esta divergência?')) return
-    const res = await fetch('http://localhost:8000/api/deletar-divergencia', {
+    const res = await fetch('http://127.0.0.1:8000/api/deletar-divergencia', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ item_id: itemId })
     })
@@ -512,38 +515,43 @@ function App() {
     { sku: '008', nome: 'Bermuda Casual - Azul', preco: 89.90, estoque: 10 },
   ]
 
-  const handleBuscarSKU = async (busca: string) => {
+  const handleBuscarSKU = (busca: string) => {
+    // Atualiza o input imediatamente (resposta instantanea ao digitar)
     setProdutoOlistSKU(busca)
+
+    // Cancela a busca anterior agendada
+    if (buscaTimeoutRef.current) {
+      clearTimeout(buscaTimeoutRef.current)
+    }
 
     if (busca.length < 2) {
       setSugestoesSKU([])
+      setBuscandoSKU(false)
       return
     }
 
-    try {
-      // Buscar produtos da API da Olist
-      const response = await fetch(`http://localhost:8000/api/olist/produtos?q=${encodeURIComponent(busca)}`)
+    // Debounce: so dispara a busca 300ms apos parar de digitar
+    setBuscandoSKU(true)
+    buscaTimeoutRef.current = setTimeout(() => {
+      executarBuscaSKU(busca)
+    }, 300)
+  }
 
-      if (!response.ok) {
-        const errorData = await response.json()
-        if (response.status === 503) {
-          // Chave não configurada - mostrar aviso
-          setSugestoesSKU([])
-          setMessage({
-            type: 'warning',
-            text: '⚠️ Configure sua chave de API da Olist no arquivo .env para usar a busca em tempo real. Adicione: OLIST_API_KEY=sua_chave_aqui'
-          })
-          return
-        }
+  const executarBuscaSKU = async (busca: string) => {
+    try {
+      const response = await fetch(`http://127.0.0.1:8000/api/olist/produtos?q=${encodeURIComponent(busca)}`)
+
+      if (!response.ok && response.status === 503) {
+        setSugestoesSKU([])
+        setMessage({
+          type: 'warning',
+          text: '⚠️ Configure sua chave de API da Olist no arquivo .env para usar a busca em tempo real.'
+        })
+        return
       }
 
       const data = await response.json()
-
-      if (data.produtos && Array.isArray(data.produtos)) {
-        setSugestoesSKU(data.produtos)
-      } else {
-        setSugestoesSKU([])
-      }
+      setSugestoesSKU(data.produtos && Array.isArray(data.produtos) ? data.produtos : [])
     } catch (err) {
       console.error('Erro ao buscar produtos Olist:', err)
       setSugestoesSKU([])
@@ -551,13 +559,15 @@ function App() {
         type: 'error',
         text: '❌ Erro ao buscar produtos da Olist. Verifique se a API está disponível.'
       })
+    } finally {
+      setBuscandoSKU(false)
     }
   }
 
   const handleSelecionarSKU = async (produto: any) => {
     // Tentar detectar kit automaticamente
     try {
-      const resDeteccao = await fetch(`http://localhost:8000/api/olist/detectar-kit?sku=${encodeURIComponent(produto.sku.toUpperCase())}`)
+      const resDeteccao = await fetch(`http://127.0.0.1:8000/api/olist/detectar-kit?sku=${encodeURIComponent(produto.sku.toUpperCase())}`)
       const dataDeteccao = await resDeteccao.json()
 
       if (dataDeteccao.eh_kit) {
@@ -586,6 +596,7 @@ function App() {
     }
 
     // Não é kit ou detecção falhou - usar fluxo normal
+    // Seleciona imediatamente (sem estoque ainda) para a UI responder rápido
     setProdutoOlistSelecionado({
       id: produto.id || '',
       sku: produto.sku || '',
@@ -597,6 +608,22 @@ function App() {
     })
     setProdutoOlistSKU('')
     setSugestoesSKU([])
+
+    // Busca o estoque atual sob demanda (1 requisição rápida)
+    if (produto.id && (produto.estoque_atual === undefined || produto.estoque_atual === null)) {
+      try {
+        const resEstoque = await fetch(`http://127.0.0.1:8000/api/olist/estoque-produto?id=${encodeURIComponent(produto.id)}`)
+        const estoque = await resEstoque.json()
+        setProdutoOlistSelecionado((prev) => ({
+          ...prev,
+          estoque: parseInt(estoque.estoque_atual) || 0,
+          estoque_saldo: parseInt(estoque.estoque_saldo) || 0,
+          estoque_reservado: parseInt(estoque.estoque_reservado) || 0
+        }))
+      } catch (err) {
+        console.error('Erro ao buscar estoque do produto:', err)
+      }
+    }
   }
 
   const handleVincularKit = async (kit: any, componentes: any[]) => {
@@ -623,7 +650,7 @@ function App() {
 
     try {
       // Vincular kit + atualizar estoque de cada componente
-      const res = await fetch('http://localhost:8000/api/olist/kits/vincular-com-componentes', {
+      const res = await fetch('http://127.0.0.1:8000/api/olist/kits/vincular-com-componentes', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -658,7 +685,7 @@ function App() {
         const nfId = notaDetalheAberta?.id ?? notaSelecionada?.id
         if (nfId) {
           try {
-            const resNota = await fetch(`http://localhost:8000/api/notas-fiscais/${nfId}`)
+            const resNota = await fetch(`http://127.0.0.1:8000/api/notas-fiscais/${nfId}`)
             const dataNota = await resNota.json()
             setProdutosNota(dataNota.itens || [])
             setNotaDetalheAberta(dataNota)
@@ -710,7 +737,7 @@ function App() {
 
     try {
       // 1. Vincular produto NF -> anúncio Olist
-      const resVinc = await fetch('http://localhost:8000/api/olist/vincular-produto', {
+      const resVinc = await fetch('http://127.0.0.1:8000/api/olist/vincular-produto', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -728,7 +755,7 @@ function App() {
       }
 
       // 2. Atualizar estoque na Olist (ENTRADA da quantidade da NF)
-      const resEst = await fetch('http://localhost:8000/api/olist/atualizar-estoque', {
+      const resEst = await fetch('http://127.0.0.1:8000/api/olist/atualizar-estoque', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -772,7 +799,7 @@ function App() {
     }
 
     try {
-      const res = await fetch('http://localhost:8000/api/produtos-manuais', {
+      const res = await fetch('http://127.0.0.1:8000/api/produtos-manuais', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -791,7 +818,7 @@ function App() {
         // Recarregar a nota para atualizar a lista/abas
         const nfId = notaDetalheAberta?.id ?? notaSelecionada?.id
         if (nfId) {
-          const resNota = await fetch(`http://localhost:8000/api/notas-fiscais/${nfId}`)
+          const resNota = await fetch(`http://127.0.0.1:8000/api/notas-fiscais/${nfId}`)
           const dataNota = await resNota.json()
           setProdutosNota(dataNota.itens || [])
           setNotaDetalheAberta(dataNota)
@@ -807,7 +834,7 @@ function App() {
 
   const abrirNotaSelecionada = async (notaId: number) => {
     try {
-      const res = await fetch(`http://localhost:8000/api/notas-fiscais/${notaId}`)
+      const res = await fetch(`http://127.0.0.1:8000/api/notas-fiscais/${notaId}`)
       const data: NotaFiscal = await res.json()
       setNotaSelecionada(data)
       setPagina('inicial') // Mantém na inicial mas mostra a nota selecionada
@@ -820,7 +847,7 @@ function App() {
     if (!notaSelecionada) return
     try {
       // Buscar dados frescos da nota para refletir conferências já feitas
-      const res = await fetch(`http://localhost:8000/api/notas-fiscais/${notaSelecionada.id}`)
+      const res = await fetch(`http://127.0.0.1:8000/api/notas-fiscais/${notaSelecionada.id}`)
       const data: NotaFiscal = await res.json()
       setNotaSelecionada(data)
       setProdutosNota(data.itens || [])
@@ -832,7 +859,7 @@ function App() {
 
   const abrirConferencia = async (notaId: number) => {
     try {
-      const res = await fetch(`http://localhost:8000/api/notas-fiscais/${notaId}`)
+      const res = await fetch(`http://127.0.0.1:8000/api/notas-fiscais/${notaId}`)
       const data: NotaFiscal = await res.json()
       setNotaSelecionada(data)
       setPagina('conferencia')
@@ -882,7 +909,7 @@ function App() {
       const formData = new FormData()
       formData.append('file', file)
 
-      const res = await fetch('http://localhost:8000/api/upload-nfe', {
+      const res = await fetch('http://127.0.0.1:8000/api/upload-nfe', {
         method: 'POST',
         body: formData,
       })
@@ -1319,7 +1346,7 @@ function App() {
                     }
 
                     const handleResolver = async () => {
-                      const res = await fetch('http://localhost:8000/api/resolver-divergencia', {
+                      const res = await fetch('http://127.0.0.1:8000/api/resolver-divergencia', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ item_id: div.item_id })
@@ -1334,7 +1361,7 @@ function App() {
 
                     const handleDeletar = async () => {
                       if (!window.confirm('Tem certeza que deseja deletar esta divergência?')) return
-                      const res = await fetch('http://localhost:8000/api/deletar-divergencia', {
+                      const res = await fetch('http://127.0.0.1:8000/api/deletar-divergencia', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ item_id: div.item_id })

@@ -53,7 +53,7 @@ const RecomendacoesRecompra: React.FC<RecomendacoesRecompraProps> = ({ onVoltar 
         params.append('filtro', filtroUrgencia)
       }
 
-      const response = await fetch(`http://localhost:8000/api/recomendacoes?${params}`)
+      const response = await fetch(`http://127.0.0.1:8000/api/recomendacoes?${params}`)
       if (!response.ok) {
         throw new Error('Erro ao carregar recomendações')
       }
@@ -70,7 +70,7 @@ const RecomendacoesRecompra: React.FC<RecomendacoesRecompraProps> = ({ onVoltar 
   const atualizarRecomendacoes = async () => {
     try {
       setAtualizando(true)
-      const response = await fetch('http://localhost:8000/api/recomendacoes/gerar', {
+      const response = await fetch('http://127.0.0.1:8000/api/recomendacoes/gerar', {
         method: 'POST'
       })
 

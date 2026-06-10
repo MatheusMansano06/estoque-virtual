@@ -711,10 +711,10 @@ async def buscar_produtos_olist(request: Request):
 
 
 async def listar_produtos_olist(request: Request):
-    """Lista todos os produtos na Olist"""
+    """Lista todos os produtos na Olist (usa cache)"""
     try:
         print("[LISTA] Listando todos os produtos da Olist")
-        produtos = olist.listar_todos_produtos(limite=100)
+        produtos = olist.listar_todos_produtos(limite=2000)
 
         return JSONResponse({
             "produtos": produtos,
@@ -728,6 +728,45 @@ async def listar_produtos_olist(request: Request):
             "total": 0,
             "erro": str(e)
         })
+
+
+async def obter_estoque_produto_olist(request: Request):
+    """Busca o estoque de UM produto sob demanda (rapido - 1 requisicao)"""
+    try:
+        produto_id = request.query_params.get("id", "").strip()
+        if not produto_id:
+            return JSONResponse({"error": "id obrigatorio"}, status_code=400)
+
+        estoque = olist.obter_estoque(produto_id)
+        if estoque:
+            return JSONResponse({
+                "estoque_atual": estoque.get("disponivel", 0),
+                "estoque_saldo": estoque.get("saldo", 0),
+                "estoque_reservado": estoque.get("reservado", 0),
+            })
+        return JSONResponse({
+            "estoque_atual": 0,
+            "estoque_saldo": 0,
+            "estoque_reservado": 0,
+        })
+    except Exception as e:
+        print(f"[ERRO] Estoque produto: {str(e)}")
+        return JSONResponse({"estoque_atual": 0, "estoque_saldo": 0, "estoque_reservado": 0})
+
+
+async def refresh_cache_produtos_olist(request: Request):
+    """Forca recarregar o cache de produtos da Olist (atualizar lista)"""
+    try:
+        print("[CACHE] Refresh forcado do cache de produtos")
+        produtos = olist.listar_todos_produtos(limite=2000, forcar_refresh=True)
+        return JSONResponse({
+            "status": "sucesso",
+            "total": len(produtos),
+            "mensagem": f"Cache atualizado: {len(produtos)} produtos"
+        })
+    except Exception as e:
+        print(f"[ERRO] Refresh cache: {str(e)}")
+        return JSONResponse({"status": "erro", "mensagem": str(e)}, status_code=500)
 
 
 async def detectar_kit_automatico(request: Request):
@@ -1340,6 +1379,8 @@ routes = [
     Route("/api/olist/produtos", buscar_produtos_olist, methods=["GET"]),
     Route("/api/olist/detectar-kit", detectar_kit_automatico, methods=["GET"]),
     Route("/api/olist/produtos-todos", listar_produtos_olist, methods=["GET"]),
+    Route("/api/olist/estoque-produto", obter_estoque_produto_olist, methods=["GET"]),
+    Route("/api/olist/refresh-cache", refresh_cache_produtos_olist, methods=["POST"]),
     Route("/api/olist/vincular-produto", vincular_produto_olist, methods=["POST"]),
     Route("/api/olist/aceitar-sugestao", aceitar_sugestao_vinculo, methods=["POST"]),
     Route("/api/olist/atualizar-estoque", atualizar_estoque_olist, methods=["POST"]),

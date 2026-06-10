@@ -24,6 +24,9 @@ load_dotenv()
 # Caminho para armazenar o token de forma persistente
 TOKEN_FILE = os.path.join(os.path.dirname(__file__), "..", "olist_token.json")
 
+# Caminho para o cache de produtos (sobrevive a restart do servidor)
+CACHE_FILE = os.path.join(os.path.dirname(__file__), "..", "produtos_cache.json")
+
 
 class OlistIntegration:
     """Integracao com Olist/Tiny ERP - API v3 OAuth2 Authorization Code"""
@@ -44,6 +47,11 @@ class OlistIntegration:
 
         # Token simples v2 (fallback legado)
         self.token_v2 = os.getenv("OLIST_API_TOKEN_SIMPLE", "")
+
+        # Cache de produtos em memoria (evita recarregar a cada busca)
+        self._cache_produtos: Optional[List[Dict]] = None
+        self._cache_timestamp: Optional[datetime] = None
+        self._cache_ttl_segundos = 1800  # 30 minutos
 
     # ========== PERSISTENCIA DE TOKEN ==========
 
@@ -216,10 +224,84 @@ class OlistIntegration:
             print(f"[OLIST] Erro ao obter token: {e}")
             return None
 
+    # ========== CACHE DE PRODUTOS ==========
+
+    def _cache_valido(self) -> bool:
+        """Verifica se o cache em memoria ainda esta dentro do TTL"""
+        if self._cache_produtos is None or self._cache_timestamp is None:
+            return False
+        idade = (datetime.utcnow() - self._cache_timestamp).total_seconds()
+        return idade < self._cache_ttl_segundos
+
+    def _carregar_cache_arquivo(self) -> bool:
+        """Carrega cache do arquivo para a memoria. Retorna True se valido."""
+        try:
+            if not os.path.exists(CACHE_FILE):
+                return False
+            with open(CACHE_FILE, "r", encoding="utf-8") as f:
+                dados = json.load(f)
+            ts = datetime.fromisoformat(dados["timestamp"])
+            idade = (datetime.utcnow() - ts).total_seconds()
+            if idade < self._cache_ttl_segundos and dados.get("produtos"):
+                self._cache_produtos = dados["produtos"]
+                self._cache_timestamp = ts
+                print(f"[OLIST] Cache carregado do arquivo: {len(self._cache_produtos)} produtos ({int(idade)}s atras)")
+                return True
+        except Exception as e:
+            print(f"[OLIST] Erro ao carregar cache do arquivo: {e}")
+        return False
+
+    def _salvar_cache(self, produtos: List[Dict]):
+        """Salva produtos no cache (memoria + arquivo)"""
+        self._cache_produtos = produtos
+        self._cache_timestamp = datetime.utcnow()
+        try:
+            with open(CACHE_FILE, "w", encoding="utf-8") as f:
+                json.dump({
+                    "timestamp": self._cache_timestamp.isoformat(),
+                    "produtos": produtos
+                }, f, ensure_ascii=False)
+            print(f"[OLIST] Cache salvo: {len(produtos)} produtos")
+        except Exception as e:
+            print(f"[OLIST] Erro ao salvar cache: {e}")
+
+    def invalidar_cache(self):
+        """Forca a proxima busca a recarregar da API"""
+        self._cache_produtos = None
+        self._cache_timestamp = None
+        try:
+            if os.path.exists(CACHE_FILE):
+                os.remove(CACHE_FILE)
+        except Exception:
+            pass
+        print("[OLIST] Cache invalidado")
+
     # ========== OPERACOES NA API ==========
 
-    def listar_todos_produtos(self, limite: int = 2000) -> List[Dict]:
-        """Lista TODOS os produtos com paginação CORRETA (suporta 1196+)"""
+    def listar_todos_produtos(self, limite: int = 2000, forcar_refresh: bool = False) -> List[Dict]:
+        """
+        Lista TODOS os produtos com cache.
+        - Se cache valido (memoria ou arquivo), retorna instantaneo.
+        - Senao, carrega da API (paginado) e salva no cache.
+        """
+        # 1) Cache em memoria
+        if not forcar_refresh and self._cache_valido():
+            print(f"[OLIST] Cache HIT (memoria): {len(self._cache_produtos)} produtos")
+            return self._cache_produtos
+
+        # 2) Cache em arquivo
+        if not forcar_refresh and self._carregar_cache_arquivo():
+            return self._cache_produtos
+
+        # 3) Cache miss -> carregar da API
+        print(f"[OLIST] Cache MISS -> carregando da API...")
+        produtos = self._buscar_produtos_api(limite=limite)
+        if produtos:
+            self._salvar_cache(produtos)
+        return produtos
+
+    def _buscar_produtos_api(self, limite: int = 2000) -> List[Dict]:
+        """Lista TODOS os produtos da API com paginação (sem cache)"""
         resultado = []
         pagina = 1
         total_recuperado = 0
@@ -314,64 +396,38 @@ class OlistIntegration:
         print(f"[OLIST] ERRO: Nenhum produto listado")
         return resultado
 
-    def buscar_produtos(self, termo: str) -> List[Dict]:
-        """Busca produtos com múltiplas estratégias para garantir resultado"""
+    def buscar_produtos(self, termo: str, limite_resultados: int = 30) -> List[Dict]:
+        """
+        Busca produtos no cache local (rapido).
+        O estoque NAO e carregado aqui (seria lento) - e buscado sob demanda
+        quando o usuario seleciona um produto via obter_estoque().
+        """
         if not termo or len(termo) < 1:
             return []
 
         termo_lower = termo.lower().strip()
-        resultado = []
 
-        print(f"[OLIST] === BUSCANDO: {termo} ===")
+        # Carrega do cache (instantaneo apos a 1a vez)
+        todos = self.listar_todos_produtos(limite=2000)
+        if not todos:
+            print(f"[OLIST] Nenhum produto no cache para buscar '{termo}'")
+            return []
 
-        # ESTRATÉGIA 1: Listar TODOS os produtos (1196+) e fazer busca local
-        print(f"[OLIST] Estratégia 1: Listar todos 1196+ produtos...")
-        try:
-            todos = self.listar_todos_produtos(limite=2000)
-            print(f"[OLIST] Total de produtos listados: {len(todos)}")
+        # Filtra por SKU, nome ou codigo - prioriza match no inicio do SKU/nome
+        matches_inicio = []
+        matches_meio = []
+        for p in todos:
+            sku = p.get('sku', '').lower()
+            nome = p.get('nome', '').lower()
+            codigo = p.get('codigo_produto', '').lower()
 
-            if todos:
-                # Buscar por SKU, nome ou código
-                resultado = [
-                    p for p in todos
-                    if termo_lower in p.get('nome', '').lower()
-                    or termo_lower in p.get('sku', '').lower()
-                    or termo_lower in p.get('codigo_produto', '').lower()
-                ]
+            if sku.startswith(termo_lower) or nome.startswith(termo_lower):
+                matches_inicio.append(p)
+            elif termo_lower in nome or termo_lower in sku or termo_lower in codigo:
+                matches_meio.append(p)
 
-                if resultado:
-                    print(f"[OLIST] OK: Encontrado {len(resultado)} produto(s) via busca local")
-        except Exception as e:
-            print(f"[OLIST] Erro na estratégia 1: {e}")
-
-        # ESTRATÉGIA 2: Se não encontrou, tentar API diretamente
-        if not resultado:
-            print(f"[OLIST] Estratégia 2: Tentar busca via API...")
-            token = self.token_v2 or self.get_access_token()
-            if token:
-                for campo in ["sku", "nome"]:
-                    try:
-                        resultado = self._buscar_por_campo(token, campo, termo)
-                        if resultado:
-                            print(f"[OLIST] Encontrado via API {campo}: {len(resultado)}")
-                            break
-                    except Exception as e:
-                        print(f"[OLIST] Erro busca API {campo}: {e}")
-
-        # Enriquecer com estoque se houver resultados
-        if resultado:
-            for prod in resultado[:50]:  # Limitar a 50 para não sobrecarregar
-                try:
-                    if prod.get("id"):
-                        estoque = self.obter_estoque(str(prod["id"]))
-                        if estoque:
-                            prod["estoque_atual"] = estoque.get("disponivel", 0)
-                            prod["estoque_saldo"] = estoque.get("saldo", 0)
-                            prod["estoque_reservado"] = estoque.get("reservado", 0)
-                except:
-                    prod["estoque_atual"] = 0
-
-        print(f"[OLIST] === FIM DA BUSCA: {len(resultado)} resultados ===")
+        resultado = (matches_inicio + matches_meio)[:limite_resultados]
+        print(f"[OLIST] Busca '{termo}': {len(resultado)} resultados (de {len(todos)} no cache)")
         return resultado
 
     def obter_detalhes_completo(self, produto_id: str) -> Optional[Dict]:
@@ -703,54 +759,20 @@ class OlistIntegration:
             )
         }
 
-
-# Instancia global
-olist = OlistIntegration()
-
-    def buscar_variacoes_direto(self, sku: str) -> List[Dict]:
-        """Busca variações de produto direto na API"""
-        token = self.get_access_token()
-        if not token:
-            return []
-        
-        try:
-            # Buscar usando o endpoint de variações
-            url = f"{self.API_BASE}/variações?codigo={sku}&pageSize=100"
-            headers = {"Accept": "application/json", "Authorization": f"Bearer {token}"}
-            req = urllib.request.Request(url, headers=headers, method="GET")
-            
-            with urllib.request.urlopen(req, timeout=15) as response:
-                resposta = json.loads(response.read().decode("utf-8"))
-                variações = resposta.get("itens", [])
-                
-                resultado = []
-                for var in variações:
-                    resultado.append({
-                        "id": var.get("id", ""),
-                        "sku": var.get("sku", sku),
-                        "nome": var.get("descricao", ""),
-                        "preco": float(var.get("precos", {}).get("preco", 0) if isinstance(var.get("precos"), dict) else 0),
-                        "codigo_produto": var.get("sku", sku),
-                    })
-                
-                return resultado
-        except:
-            return []
-
     def obter_produto_por_id(self, produto_id: str) -> Optional[Dict]:
         """Obtém um produto específico pela ID"""
         token = self.get_access_token()
         if not token:
             return None
-        
+
         try:
             url = f"{self.API_BASE}/produtos/{produto_id}"
             headers = {"Accept": "application/json", "Authorization": f"Bearer {token}"}
             req = urllib.request.Request(url, headers=headers, method="GET")
-            
+
             with urllib.request.urlopen(req, timeout=15) as response:
                 data = json.loads(response.read().decode("utf-8"))
-                
+
                 return {
                     "id": data.get("id", ""),
                     "sku": data.get("sku", ""),
@@ -762,3 +784,7 @@ olist = OlistIntegration()
         except Exception as e:
             print(f"[OLIST] Erro ao obter produto {produto_id}: {e}")
             return None
+
+
+# Instancia global
+olist = OlistIntegration()

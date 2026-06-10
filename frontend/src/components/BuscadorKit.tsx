@@ -45,7 +45,7 @@ export default function BuscadorKit({ itemId, onKitDetectado, onSemKit }: Buscad
 
     try {
       // Verificar se é kit
-      const resKit = await fetch(`http://localhost:8000/api/olist/kits/verificar?sku=${encodeURIComponent(skuBuscado.toUpperCase())}`)
+      const resKit = await fetch(`http://127.0.0.1:8000/api/olist/kits/verificar?sku=${encodeURIComponent(skuBuscado.toUpperCase())}`)
       const dataKit = await resKit.json()
 
       if (!dataKit.eh_kit) {
@@ -62,7 +62,7 @@ export default function BuscadorKit({ itemId, onKitDetectado, onSemKit }: Buscad
       const compsData: Componente[] = []
       for (const sku of dataKit.skus_componentes) {
         try {
-          const resProd = await fetch(`http://localhost:8000/api/olist/produtos?q=${encodeURIComponent(sku)}`)
+          const resProd = await fetch(`http://127.0.0.1:8000/api/olist/produtos?q=${encodeURIComponent(sku)}`)
           const dataProd = await resProd.json()
           const prod = dataProd.produtos?.[0]
           if (prod) {

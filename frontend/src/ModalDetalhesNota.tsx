@@ -90,7 +90,7 @@ export function ModalDetalhesNota({
         }
 
         // Registrar divergência
-        const resDivergencia = await fetch('http://localhost:8000/api/registrar-divergencia', {
+        const resDivergencia = await fetch('http://127.0.0.1:8000/api/registrar-divergencia', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -128,7 +128,7 @@ export function ModalDetalhesNota({
       } else {
         // === FLUXO SEM DIVERGÊNCIA (quantidade correta) ===
         // Persistir a confirmação no backend (marca como conferido)
-        const resConf = await fetch('http://localhost:8000/api/confirmar-estoque', {
+        const resConf = await fetch('http://127.0.0.1:8000/api/confirmar-estoque', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({

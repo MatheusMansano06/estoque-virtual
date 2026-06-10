@@ -56,7 +56,7 @@ export function ModalDetalhes({
   const loadHistorico = async () => {
     try {
       const res = await fetch(
-        `http://localhost:8000/api/historico-confirmacao/${produto.id_item}`
+        `http://127.0.0.1:8000/api/historico-confirmacao/${produto.id_item}`
       )
       const data = await res.json()
       setHistorico(data.historico || [])
@@ -70,7 +70,7 @@ export function ModalDetalhes({
     setMessage('')
 
     try {
-      const res = await fetch('http://localhost:8000/api/confirmar-estoque', {
+      const res = await fetch('http://127.0.0.1:8000/api/confirmar-estoque', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

@@ -79,7 +79,7 @@ const ModalRecomendacaoDetalhes: React.FC<ModalRecomendacaoDetalhesProps> = ({
     try {
       setCarregando(true)
       const response = await fetch(
-        `http://localhost:8000/api/recomendacoes/${recomendacao.sku_olist}`
+        `http://127.0.0.1:8000/api/recomendacoes/${recomendacao.sku_olist}`
       )
 
       if (!response.ok) {
@@ -101,7 +101,7 @@ const ModalRecomendacaoDetalhes: React.FC<ModalRecomendacaoDetalhesProps> = ({
       setComprando(true)
 
       const response = await fetch(
-        `http://localhost:8000/api/recomendacoes/${recomendacao.sku_olist}/confirmar-compra`,
+        `http://127.0.0.1:8000/api/recomendacoes/${recomendacao.sku_olist}/confirmar-compra`,
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
