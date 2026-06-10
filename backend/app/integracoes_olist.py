@@ -396,38 +396,91 @@ class OlistIntegration:
         print(f"[OLIST] ERRO: Nenhum produto listado")
         return resultado
 
+    def _buscar_por_codigo_api(self, codigo: str) -> List[Dict]:
+        """
+        Busca um produto por SKU EXATO direto na API (parametro ?codigo=).
+        Essencial para achar VARIACOES, que nao aparecem na listagem /produtos.
+        """
+        token = self.get_access_token()
+        if not token:
+            return []
+        try:
+            url = f"{self.API_BASE}/produtos?codigo={urllib.parse.quote(codigo)}&limit=20"
+            req = urllib.request.Request(
+                url, headers={"Accept": "application/json", "Authorization": f"Bearer {token}"}
+            )
+            with urllib.request.urlopen(req, timeout=15) as r:
+                dados = json.loads(r.read().decode("utf-8"))
+
+            itens = dados.get("itens", []) or []
+            out = []
+            for prod in itens:
+                out.append({
+                    "id": prod.get("id", ""),
+                    "sku": prod.get("sku", ""),
+                    "nome": prod.get("descricao") or prod.get("nome", ""),
+                    "preco": float(prod.get("precos", {}).get("preco", 0) if isinstance(prod.get("precos"), dict) else prod.get("preco", 0) or 0),
+                    "codigo_produto": prod.get("sku", ""),
+                })
+            if out:
+                print(f"[OLIST] Busca por codigo '{codigo}': {len(out)} resultado(s) via API")
+            return out
+        except Exception as e:
+            print(f"[OLIST] Busca por codigo '{codigo}' falhou: {e}")
+            return []
+
     def buscar_produtos(self, termo: str, limite_resultados: int = 30) -> List[Dict]:
         """
-        Busca produtos no cache local (rapido).
+        Busca hibrida:
+        1. Cache local (rapido) - cobre busca por NOME e SKUs da listagem.
+        2. API ?codigo= (1 req) - acha SKU EXATO incluindo VARIACOES que nao
+           aparecem na listagem /produtos.
         O estoque NAO e carregado aqui (seria lento) - e buscado sob demanda
-        quando o usuario seleciona um produto via obter_estoque().
+        quando o usuario seleciona um produto.
         """
         if not termo or len(termo) < 1:
             return []
 
         termo_lower = termo.lower().strip()
 
-        # Carrega do cache (instantaneo apos a 1a vez)
-        todos = self.listar_todos_produtos(limite=2000)
-        if not todos:
-            print(f"[OLIST] Nenhum produto no cache para buscar '{termo}'")
-            return []
+        # 1) Cache local (instantaneo apos a 1a vez)
+        todos = self.listar_todos_produtos(limite=3000)
 
-        # Filtra por SKU, nome ou codigo - prioriza match no inicio do SKU/nome
         matches_inicio = []
         matches_meio = []
+        achou_sku_exato = False
         for p in todos:
             sku = p.get('sku', '').lower()
             nome = p.get('nome', '').lower()
             codigo = p.get('codigo_produto', '').lower()
+
+            if sku == termo_lower:
+                achou_sku_exato = True
 
             if sku.startswith(termo_lower) or nome.startswith(termo_lower):
                 matches_inicio.append(p)
             elif termo_lower in nome or termo_lower in sku or termo_lower in codigo:
                 matches_meio.append(p)
 
-        resultado = (matches_inicio + matches_meio)[:limite_resultados]
-        print(f"[OLIST] Busca '{termo}': {len(resultado)} resultados (de {len(todos)} no cache)")
+        resultado = matches_inicio + matches_meio
+
+        # 2) Busca na API por codigo (1 req) SOMENTE quando parece um SKU
+        #    especifico que o cache nao cobriu bem:
+        #    - sem match exato no cache, E
+        #    - cache trouxe poucos resultados (nao e um nome amplo tipo "viseira"), E
+        #    - termo sem espaco com >=3 chars (formato de SKU).
+        #    Isso acha VARIACOES sem penalizar buscas por nome.
+        if (not achou_sku_exato and len(resultado) < 5
+                and ' ' not in termo and len(termo_lower) >= 3):
+            via_api = self._buscar_por_codigo_api(termo.strip())
+            if via_api:
+                ids_no_resultado = {str(p.get('id')) for p in resultado}
+                novos = [p for p in via_api if str(p.get('id')) not in ids_no_resultado]
+                # Variacoes/SKU exato vem no TOPO (sao o que o usuario digitou)
+                resultado = novos + resultado
+
+        resultado = resultado[:limite_resultados]
+        print(f"[OLIST] Busca '{termo}': {len(resultado)} resultados (cache={len(todos)})")
         return resultado
 
     def obter_detalhes_completo(self, produto_id: str) -> Optional[Dict]:
