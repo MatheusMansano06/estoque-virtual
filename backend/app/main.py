@@ -17,11 +17,13 @@ import io
 
 from app.models import (
     NotaFiscal, ItemEstoque, ConfirmacaoEstoque, StatusEstoque, VinculoOlist,
-    Fornecedor, HistoricoCompra, ConfiguracaoEstoqueMinimo, NotificacaoFornecedor
+    Fornecedor, HistoricoCompra, ConfiguracaoEstoqueMinimo, NotificacaoFornecedor,
+    EmbaleFU, ItemEmbaleFU
 )
 from app.utils.nfe_parser import NFeParsing
 from app.utils.nfe_pdf_generator import NFePDFGenerator
 from app.utils.fornecedores import garantir_fornecedor, linkar_fornecedor_nf
+from app.utils.embale_parser import extrair_items_embale_pdf
 from app.integracoes_olist import olist
 from app.jobs import iniciar_scheduler
 
@@ -1372,6 +1374,200 @@ async def olist_callback(request: Request):
         """, status_code=500)
 
 
+# ==================== ENDPOINTS EMBALDES/LISTA DE SEPARAÇÃO ====================
+
+async def upload_embale(request: Request):
+    """
+    POST /api/embaldes/upload
+    Faz upload de um PDF de lista de separação (embalde para FU)
+    Extrai os items e vincula automaticamente com anúncios Olist já vinculados
+    """
+    try:
+        db = SessionLocal()
+
+        # Receber arquivo
+        form = await request.form()
+        arquivo = form.get("arquivo")
+        nome_embale = form.get("nome_embale", "Embale sem nome")
+        observacoes = form.get("observacoes", "")
+
+        if not arquivo:
+            return JSONResponse({"erro": "Arquivo não fornecido"}, status_code=400)
+
+        # Validar tipo de arquivo
+        if not arquivo.filename.lower().endswith('.pdf'):
+            return JSONResponse({"erro": "Apenas arquivos PDF são aceitos"}, status_code=400)
+
+        # Salvar arquivo com UUID
+        arquivo_uuid = f"{uuid.uuid4()}_{arquivo.filename}"
+        caminho_arquivo = os.path.join(UPLOAD_DIR, arquivo_uuid)
+
+        conteudo = await arquivo.read()
+        with open(caminho_arquivo, 'wb') as f:
+            f.write(conteudo)
+
+        # Criar embale no BD
+        embale = EmbaleFU(
+            nome_embale=nome_embale,
+            arquivo_original=arquivo.filename,
+            arquivo_uuid=arquivo_uuid,
+            observacoes=observacoes
+        )
+        db.add(embale)
+        db.commit()
+        db.refresh(embale)
+
+        # Extrair items do PDF
+        items_extraidos = extrair_items_embale_pdf(caminho_arquivo)
+
+        if isinstance(items_extraidos, dict) and "erro" in items_extraidos:
+            return JSONResponse(items_extraidos, status_code=400)
+
+        # Processar cada item
+        items_processados = 0
+        items_validados = 0
+        items_com_erro = []
+
+        for item_data in items_extraidos:
+            titulo = item_data.get("titulo_anuncio", "").strip()
+            qtd = item_data.get("quantidade_separada", 0)
+
+            # Procurar vínculo Olist com esse título
+            vinculo = db.query(VinculoOlist).filter(
+                VinculoOlist.olist_nome.ilike(f"%{titulo}%")
+            ).first()
+
+            item_embale = ItemEmbaleFU(
+                embalde_id=embale.id,
+                titulo_anuncio=titulo,
+                quantidade_separada=qtd,
+                validado=0
+            )
+
+            if vinculo:
+                item_embale.olist_produto_id = vinculo.olist_produto_id
+                item_embale.olist_sku = vinculo.olist_sku
+                item_embale.olist_nome = vinculo.olist_nome
+                item_embale.validado = 1
+                item_embale.validacao_mensagem = "Anúncio Olist vinculado encontrado"
+                items_validados += 1
+            else:
+                item_embale.validado = 0
+                item_embale.validacao_mensagem = "Nenhum anúncio Olist vinculado encontrado com esse título"
+                items_com_erro.append({
+                    "titulo": titulo,
+                    "erro": "Anúncio não vinculado"
+                })
+
+            db.add(item_embale)
+            items_processados += 1
+
+        db.commit()
+
+        return JSONResponse({
+            "id": embale.id,
+            "nome_embale": embale.nome_embale,
+            "status": "processado",
+            "itens_processados": items_processados,
+            "itens_validados": items_validados,
+            "itens_com_erro": len(items_com_erro),
+            "erros": items_com_erro if items_com_erro else None,
+            "mensagem": f"Embale criado com {items_validados} items validados"
+        })
+
+    except Exception as e:
+        return JSONResponse({"erro": str(e)}, status_code=500)
+    finally:
+        db.close()
+
+
+async def listar_embaldes(request: Request):
+    """
+    GET /api/embaldes
+    Lista todos os embaldes/listas de separação
+    """
+    try:
+        db = SessionLocal()
+
+        skip = int(request.query_params.get("skip", 0))
+        limit = min(int(request.query_params.get("limit", 10)), MAX_PAGINATION_LIMIT)
+        status = request.query_params.get("status", None)
+
+        query = db.query(EmbaleFU)
+
+        if status:
+            query = query.filter(EmbaleFU.status == status)
+
+        total = query.count()
+        embaldes = query.offset(skip).limit(limit).all()
+
+        return JSONResponse({
+            "total": total,
+            "skip": skip,
+            "limit": limit,
+            "items": [
+                {
+                    "id": e.id,
+                    "nome_embale": e.nome_embale,
+                    "arquivo_original": e.arquivo_original,
+                    "data_upload": e.data_upload.isoformat(),
+                    "status": e.status,
+                    "observacoes": e.observacoes,
+                    "qtd_items": len(e.itens),
+                    "qtd_validados": sum(1 for i in e.itens if i.validado == 1)
+                }
+                for e in embaldes
+            ]
+        })
+
+    except Exception as e:
+        return JSONResponse({"erro": str(e)}, status_code=500)
+    finally:
+        db.close()
+
+
+async def obter_embale(request: Request):
+    """
+    GET /api/embaldes/{id}
+    Obtém detalhes de um embale específico
+    """
+    try:
+        db = SessionLocal()
+        embale_id = int(request.path_params.get("embale_id"))
+
+        embale = db.query(EmbaleFU).filter(EmbaleFU.id == embale_id).first()
+
+        if not embale:
+            return JSONResponse({"erro": "Embale não encontrado"}, status_code=404)
+
+        return JSONResponse({
+            "id": embale.id,
+            "nome_embale": embale.nome_embale,
+            "arquivo_original": embale.arquivo_original,
+            "data_upload": embale.data_upload.isoformat(),
+            "status": embale.status,
+            "observacoes": embale.observacoes,
+            "itens": [
+                {
+                    "id": i.id,
+                    "titulo_anuncio": i.titulo_anuncio,
+                    "quantidade_separada": i.quantidade_separada,
+                    "olist_produto_id": i.olist_produto_id,
+                    "olist_sku": i.olist_sku,
+                    "olist_nome": i.olist_nome,
+                    "validado": i.validado,
+                    "validacao_mensagem": i.validacao_mensagem
+                }
+                for i in embale.itens
+            ]
+        })
+
+    except Exception as e:
+        return JSONResponse({"erro": str(e)}, status_code=500)
+    finally:
+        db.close()
+
+
 routes = [
     Route("/", root, methods=["GET"]),
     Route("/api/upload-nfe", upload_nfe, methods=["POST"]),
@@ -1408,6 +1604,10 @@ routes = [
     Route("/api/olist/sugestao-vinculo", olist_sugestao_vinculo, methods=["GET"]),
     Route("/api/olist/vinculos", olist_listar_vinculos, methods=["GET"]),
     Route("/api/olist/vinculos/deletar", olist_deletar_vinculo, methods=["POST"]),
+    # Embaldes / Lista de Separação para FU
+    Route("/api/embaldes/upload", upload_embale, methods=["POST"]),
+    Route("/api/embaldes", listar_embaldes, methods=["GET"]),
+    Route("/api/embaldes/{embale_id}", obter_embale, methods=["GET"]),
 ]
 
 app = Starlette(routes=routes)

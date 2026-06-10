@@ -174,3 +174,48 @@ class NotificacaoFornecedor(Base):
     erro_mensagem = Column(Text, nullable=True)
 
     fornecedor = relationship("Fornecedor", back_populates="notificacoes")
+
+
+class EmbaleFU(Base):
+    """
+    Lista de separação (embalde) para Fulfillment
+    Arquivo PDF com produtos que já foram separados fisicamente
+    """
+    __tablename__ = "embaldes_fu"
+
+    id = Column(Integer, primary_key=True)
+    nome_embalde = Column(String(255), index=True)
+    arquivo_original = Column(String(255))
+    arquivo_uuid = Column(String(255), unique=True)  # Nome único no sistema
+    data_upload = Column(DateTime, default=datetime.utcnow)
+    status = Column(String(50), default="ativo")  # ativo, enviado, processado, cancelado
+    observacoes = Column(Text, nullable=True)
+
+    itens = relationship("ItemEmbaleFU", back_populates="embalde", cascade="all, delete-orphan")
+
+
+class ItemEmbaleFU(Base):
+    """
+    Item dentro de um embalde/lista de separação
+    Cada item vincula-se automaticamente a um anúncio Olist se existir vínculo
+    """
+    __tablename__ = "itens_embale_fu"
+
+    id = Column(Integer, primary_key=True)
+    embalde_id = Column(Integer, ForeignKey("embaldes_fu.id"))
+    titulo_anuncio = Column(String(255), index=True)  # Título do anúncio (como vem do PDF)
+    quantidade_separada = Column(Float)
+
+    # Vinculação automática com Olist
+    olist_produto_id = Column(String(100), nullable=True)  # ID do produto Olist
+    olist_sku = Column(String(100), nullable=True)  # SKU do anúncio
+    olist_nome = Column(String(255), nullable=True)  # Nome exato do anúncio
+
+    # Status da validação
+    validado = Column(Integer, default=0)  # 1 = validado, 0 = não validado
+    validacao_mensagem = Column(Text, nullable=True)  # Motivo se não validado
+    data_validacao = Column(DateTime, nullable=True)
+
+    criado_em = Column(DateTime, default=datetime.utcnow)
+
+    embalde = relationship("EmbaleFU", back_populates="itens")

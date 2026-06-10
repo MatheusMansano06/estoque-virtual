@@ -143,3 +143,42 @@ class ConfirmarCompraResponse(BaseModel):
     status: str
     id_pedido: Optional[int] = None
     mensagem: str
+
+
+# Schemas para Embaldes/Lista de Separação
+class ItemEmbaleFUBase(BaseModel):
+    titulo_anuncio: str
+    quantidade_separada: float
+
+class ItemEmbaleFUResponse(ItemEmbaleFUBase):
+    id: int
+    olist_produto_id: Optional[str]
+    olist_sku: Optional[str]
+    olist_nome: Optional[str]
+    validado: int
+    validacao_mensagem: Optional[str]
+    criado_em: datetime
+
+    class Config:
+        orm_mode = True
+
+class EmbaleFUResponse(BaseModel):
+    id: int
+    nome_embalde: str
+    arquivo_original: str
+    data_upload: datetime
+    status: str
+    observacoes: Optional[str]
+    itens: List[ItemEmbaleFUResponse]
+
+    class Config:
+        orm_mode = True
+
+class EmbaleFUUploadResponse(BaseModel):
+    id: int
+    nome_embalde: str
+    status: str
+    itens_processados: int
+    itens_validados: int
+    itens_com_erro: int
+    erros: Optional[str]
