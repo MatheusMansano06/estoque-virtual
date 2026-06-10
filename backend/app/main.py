@@ -1408,10 +1408,9 @@ async def upload_embale(request: Request):
 
         # Criar embale no BD
         embale = EmbaleFU(
-            nome_embale=nome_embale,
+            nome_embalde=nome_embale,
             arquivo_original=arquivo.filename,
-            arquivo_uuid=arquivo_uuid,
-            observacoes=observacoes
+            arquivo_uuid=arquivo_uuid
         )
         db.add(embale)
         db.commit()

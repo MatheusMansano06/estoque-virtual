@@ -14,11 +14,10 @@ interface ItemEmbale {
 
 interface Embale {
   id: number
-  nome_embale: string
+  nome_embalde: string
   arquivo_original: string
   data_upload: string
   status: string
-  observacoes?: string
   qtd_items: number
   qtd_validados: number
   itens?: ItemEmbale[]
@@ -30,7 +29,6 @@ export function EmbaldesManager() {
   const [message, setMessage] = useState('')
   const [nomeEmbale, setNomeEmbale] = useState('')
   const [arquivo, setArquivo] = useState<File | null>(null)
-  const [observacoes, setObservacoes] = useState('')
   const [embaleSelecionado, setEmbaleSelecionado] = useState<Embale | null>(null)
   const [expandidoDetalhes, setExpandidoDetalhes] = useState(false)
 
@@ -71,7 +69,6 @@ export function EmbaldesManager() {
       const formData = new FormData()
       formData.append('arquivo', arquivo)
       formData.append('nome_embale', nomeEmbale)
-      formData.append('observacoes', observacoes)
 
       const resposta = await api.post('/embaldes/upload', formData, {
         headers: {
@@ -79,16 +76,15 @@ export function EmbaldesManager() {
         }
       })
 
-      setMessage(`✓ Embale "${nomeEmbale}" criado com sucesso! ${resposta.data.itens_validados}/${resposta.data.itens_processados} items vinculados à Olist`)
+      setMessage(`✓ ${resposta.data.itens_validados}/${resposta.data.itens_processados} items vinculados à Olist`)
       setNomeEmbale('')
       setArquivo(null)
-      setObservacoes('')
 
       // Recarregar lista
       await carregarEmbaldes()
     } catch (erro: any) {
       const msgErro = erro.response?.data?.erro || String(erro)
-      setMessage('Erro ao fazer upload: ' + msgErro)
+      setMessage('Erro: ' + msgErro)
     } finally {
       setLoading(false)
     }
@@ -117,81 +113,77 @@ export function EmbaldesManager() {
         border: '2px dashed #ccc'
       }}>
         <h3>Fazer Upload de Embale</h3>
-        <p style={{ color: '#666', fontSize: '0.9rem' }}>
-          📋 Envie um arquivo PDF com a lista de separação dos produtos já separados para envio ao Marketplace.
-          O sistema identificará automaticamente quais produtos já estão vinculados à Olist.
-        </p>
 
         <form onSubmit={handleUpload}>
           <div style={{ marginBottom: '1rem' }}>
-            <label>Nome do Embale:</label>
+            <label style={{ fontWeight: 'bold' }}>Nome do Embale:</label>
             <input
               type="text"
-              placeholder="Ex: Embale 2024-01-15 (Semana 1)"
+              placeholder="Ex: Embale Semana 1"
               value={nomeEmbale}
               onChange={(e) => setNomeEmbale(e.target.value)}
+              disabled={loading}
               style={{
                 width: '100%',
-                padding: '0.5rem',
-                marginTop: '0.5rem',
-                border: '1px solid #ddd',
-                borderRadius: '4px'
-              }}
-            />
-          </div>
-
-          <div style={{ marginBottom: '1rem' }}>
-            <label>Arquivo PDF:</label>
-            <input
-              type="file"
-              accept=".pdf"
-              onChange={(e) => setArquivo(e.target.files?.[0] || null)}
-              style={{
-                width: '100%',
-                padding: '0.5rem',
-                marginTop: '0.5rem',
-                border: '1px solid #ddd',
-                borderRadius: '4px'
-              }}
-            />
-            {arquivo && (
-              <p style={{ color: '#4CAF50', fontSize: '0.9rem', marginTop: '0.5rem' }}>
-                ✓ {arquivo.name}
-              </p>
-            )}
-          </div>
-
-          <div style={{ marginBottom: '1rem' }}>
-            <label>Observações (opcional):</label>
-            <textarea
-              placeholder="Ex: Preparado para envio segunda-feira..."
-              value={observacoes}
-              onChange={(e) => setObservacoes(e.target.value)}
-              style={{
-                width: '100%',
-                padding: '0.5rem',
+                padding: '0.75rem',
                 marginTop: '0.5rem',
                 border: '1px solid #ddd',
                 borderRadius: '4px',
-                minHeight: '80px'
+                fontSize: '1rem'
               }}
             />
+          </div>
+
+          <div style={{ marginBottom: '1rem' }}>
+            <label style={{ fontWeight: 'bold' }}>Arquivo PDF:</label>
+            <div style={{
+              border: '2px solid #ddd',
+              borderRadius: '4px',
+              padding: '1.5rem',
+              textAlign: 'center',
+              backgroundColor: '#fafafa',
+              cursor: 'pointer'
+            }}>
+              <input
+                type="file"
+                accept=".pdf"
+                onChange={(e) => setArquivo(e.target.files?.[0] || null)}
+                disabled={loading}
+                style={{
+                  display: 'none'
+                }}
+                id="pdf-input"
+              />
+              <label htmlFor="pdf-input" style={{ cursor: 'pointer', display: 'block' }}>
+                {arquivo ? (
+                  <div style={{ color: '#4CAF50', fontWeight: 'bold' }}>
+                    ✓ {arquivo.name}
+                  </div>
+                ) : (
+                  <div>
+                    <div style={{ fontSize: '2rem', marginBottom: '0.5rem' }}>📄</div>
+                    <div style={{ color: '#666' }}>Clique ou arraste um PDF aqui</div>
+                  </div>
+                )}
+              </label>
+            </div>
           </div>
 
           <button
             type="submit"
             disabled={loading || !arquivo || !nomeEmbale}
             style={{
-              padding: '0.8rem 1.5rem',
+              padding: '0.9rem 2rem',
               backgroundColor: loading ? '#ccc' : '#4CAF50',
               color: 'white',
               border: 'none',
               borderRadius: '4px',
               cursor: loading ? 'not-allowed' : 'pointer',
-              fontWeight: 'bold'
+              fontWeight: 'bold',
+              fontSize: '1rem'
             }}
           >
-            {loading ? 'Enviando...' : '📤 Fazer Upload'}
+            {loading ? 'Processando...' : '📤 Fazer Upload'}
           </button>
         </form>
 
@@ -201,7 +193,8 @@ export function EmbaldesManager() {
             padding: '1rem',
             backgroundColor: message.includes('Erro') ? '#ffebee' : '#e8f5e9',
             color: message.includes('Erro') ? '#c62828' : '#2e7d32',
-            borderRadius: '4px'
+            borderRadius: '4px',
+            fontWeight: 'bold'
           }}>
             {message}
           </div>
@@ -212,7 +205,9 @@ export function EmbaldesManager() {
       <h3>Embaldes Criados</h3>
 
       {embaldes.length === 0 ? (
-        <p style={{ color: '#999' }}>Nenhum embale criado ainda.</p>
+        <p style={{ color: '#999', textAlign: 'center', padding: '2rem' }}>
+          Nenhum embale criado ainda.
+        </p>
       ) : (
         <div style={{ display: 'grid', gap: '1rem' }}>
           {embaldes.map((emb) => (
@@ -221,94 +216,85 @@ export function EmbaldesManager() {
               style={{
                 border: '1px solid #ddd',
                 borderRadius: '8px',
-                padding: '1rem',
+                padding: '1.5rem',
                 cursor: 'pointer',
                 backgroundColor: '#fafafa',
                 transition: 'all 0.3s'
               }}
               onClick={() => carregarDetalhesEmbale(emb)}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.backgroundColor = '#f0f0f0'
+                e.currentTarget.style.boxShadow = '0 2px 4px rgba(0,0,0,0.1)'
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.backgroundColor = '#fafafa'
+                e.currentTarget.style.boxShadow = 'none'
+              }}
             >
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '1rem' }}>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '2rem', alignItems: 'center' }}>
                 <div>
-                  <strong>{emb.nome_embale}</strong>
-                  <p style={{ color: '#666', fontSize: '0.9rem', margin: '0.5rem 0 0 0' }}>
+                  <div style={{ fontWeight: 'bold', fontSize: '1.1rem' }}>{emb.nome_embalde}</div>
+                  <div style={{ color: '#666', fontSize: '0.9rem', marginTop: '0.5rem' }}>
                     {new Date(emb.data_upload).toLocaleDateString('pt-BR')}
-                  </p>
+                  </div>
                 </div>
-                <div>
-                  <p style={{ margin: '0', fontSize: '0.9rem' }}>
-                    📄 {emb.arquivo_original}
-                  </p>
-                  <p style={{ margin: '0.5rem 0 0 0', color: '#666', fontSize: '0.85rem' }}>
-                    Status: <strong>{emb.status}</strong>
-                  </p>
+                <div style={{ color: '#666', fontSize: '0.9rem' }}>
+                  {emb.arquivo_original}
                 </div>
-                <div style={{ textAlign: 'right' }}>
-                  <p style={{ margin: '0', fontSize: '0.9rem' }}>
-                    ✓ {emb.qtd_validados}/{emb.qtd_items} items vinculados
-                  </p>
-                  <p style={{
-                    margin: '0.5rem 0 0 0',
-                    color: emb.qtd_validados === emb.qtd_items ? '#4CAF50' : '#ff9800',
-                    fontWeight: 'bold',
-                    fontSize: '0.85rem'
+                <div style={{ textAlign: 'right', fontWeight: 'bold' }}>
+                  <div style={{
+                    fontSize: '1.2rem',
+                    color: emb.qtd_validados === emb.qtd_items ? '#4CAF50' : '#ff9800'
                   }}>
-                    {emb.qtd_validados === emb.qtd_items
-                      ? '✓ Pronto para processar'
-                      : '⚠ Items não vinculados'}
-                  </p>
+                    ✓ {emb.qtd_validados}/{emb.qtd_items}
+                  </div>
+                  <div style={{ fontSize: '0.85rem', color: '#666', marginTop: '0.25rem' }}>
+                    items vinculados
+                  </div>
                 </div>
               </div>
 
               {/* Detalhes expandidos */}
               {expandidoDetalhes && embaleSelecionado?.id === emb.id && (
                 <div style={{
-                  marginTop: '1rem',
-                  paddingTop: '1rem',
+                  marginTop: '1.5rem',
+                  paddingTop: '1.5rem',
                   borderTop: '1px solid #eee'
                 }}>
-                  <h4>Items deste Embale:</h4>
-                  <div style={{ maxHeight: '300px', overflowY: 'auto' }}>
+                  <h4 style={{ marginTop: 0 }}>Items:</h4>
+                  <div style={{ display: 'grid', gap: '0.75rem', maxHeight: '400px', overflowY: 'auto' }}>
                     {embaleSelecionado.itens?.map((item) => (
                       <div
                         key={item.id}
                         style={{
-                          padding: '0.8rem',
-                          marginBottom: '0.5rem',
+                          padding: '1rem',
                           backgroundColor: item.validado ? '#e8f5e9' : '#fff3e0',
                           borderRadius: '4px',
                           borderLeft: `4px solid ${item.validado ? '#4CAF50' : '#ff9800'}`
                         }}
                       >
-                        <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr', gap: '1rem' }}>
+                        <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr auto', gap: '1rem', alignItems: 'center' }}>
                           <div>
-                            <p style={{ margin: '0', fontWeight: 'bold', fontSize: '0.95rem' }}>
-                              {item.titulo_anuncio}
-                            </p>
+                            <div style={{ fontWeight: 'bold' }}>{item.titulo_anuncio}</div>
                             {item.olist_nome && (
-                              <p style={{ margin: '0.3rem 0 0 0', color: '#666', fontSize: '0.85rem' }}>
-                                Vinculado: {item.olist_nome}
-                              </p>
+                              <div style={{ fontSize: '0.85rem', color: '#666', marginTop: '0.25rem' }}>
+                                → {item.olist_nome}
+                              </div>
                             )}
                           </div>
-                          <div>
-                            <p style={{ margin: '0', fontSize: '0.9rem' }}>
-                              <strong>{item.quantidade_separada}</strong> unidades
-                            </p>
+                          <div style={{ textAlign: 'center' }}>
+                            <div style={{ fontWeight: 'bold', fontSize: '1.1rem' }}>{Math.round(item.quantidade_separada)}</div>
+                            <div style={{ fontSize: '0.8rem', color: '#666' }}>un</div>
                           </div>
-                          <div style={{ textAlign: 'right' }}>
-                            <p style={{
-                              margin: '0',
-                              fontSize: '0.85rem',
-                              color: item.validado ? '#4CAF50' : '#ff9800'
-                            }}>
-                              {item.validado ? '✓ Validado' : '⚠ Não validado'}
-                            </p>
-                            {item.validacao_mensagem && (
-                              <p style={{ margin: '0.3rem 0 0 0', color: '#666', fontSize: '0.8rem' }}>
-                                {item.validacao_mensagem}
-                              </p>
-                            )}
+                          <div style={{
+                            padding: '0.4rem 0.8rem',
+                            backgroundColor: item.validado ? '#4CAF50' : '#ff9800',
+                            color: 'white',
+                            borderRadius: '4px',
+                            fontSize: '0.85rem',
+                            fontWeight: 'bold'
+                          }}>
+                            {item.validado ? '✓' : '⚠'}
                           </div>
                         </div>
                       </div>
