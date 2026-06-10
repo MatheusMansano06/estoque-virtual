@@ -1,10 +1,12 @@
 import { useState, useEffect } from 'react'
 import api from '../services/api'
 
-interface ItemEmbale {
+interface ItemInbound {
   id: number
   titulo_anuncio: string
   quantidade_separada: number
+  sku_inbound?: string
+  codigo_ml?: string
   olist_produto_id?: string
   olist_sku?: string
   olist_nome?: string
@@ -12,38 +14,38 @@ interface ItemEmbale {
   validacao_mensagem?: string
 }
 
-interface Embale {
+interface Inbound {
   id: number
   nome_embalde: string
+  numero_inbound?: string
+  total_unidades?: number
   arquivo_original: string
   data_upload: string
   status: string
   qtd_items: number
   qtd_validados: number
-  itens?: ItemEmbale[]
+  itens?: ItemInbound[]
 }
 
 export function EmbaldesManager() {
-  const [embaldes, setEmbaldes] = useState<Embale[]>([])
+  const [inbounds, setInbounds] = useState<Inbound[]>([])
   const [loading, setLoading] = useState(false)
   const [message, setMessage] = useState('')
-  const [nomeEmbale, setNomeEmbale] = useState('')
+  const [nomeInbound, setNomeInbound] = useState('')
   const [arquivo, setArquivo] = useState<File | null>(null)
-  const [embaleSelecionado, setEmbaleSelecionado] = useState<Embale | null>(null)
-  const [expandidoDetalhes, setExpandidoDetalhes] = useState(false)
+  const [inboundSelecionado, setInboundSelecionado] = useState<Inbound | null>(null)
 
-  // Carregar embaldes ao montar
   useEffect(() => {
-    carregarEmbaldes()
+    carregarInbounds()
   }, [])
 
-  const carregarEmbaldes = async () => {
+  const carregarInbounds = async () => {
     try {
       setLoading(true)
       const resposta = await api.get('/embaldes?limit=100')
-      setEmbaldes(resposta.data.items)
+      setInbounds(resposta.data.items)
     } catch (erro) {
-      setMessage('Erro ao carregar embaldes: ' + String(erro))
+      setMessage('Erro ao carregar inbounds: ' + String(erro))
     } finally {
       setLoading(false)
     }
@@ -57,8 +59,8 @@ export function EmbaldesManager() {
       return
     }
 
-    if (!nomeEmbale.trim()) {
-      setMessage('Digite um nome para o embale')
+    if (!nomeInbound.trim()) {
+      setMessage('Digite um nome para o inbound')
       return
     }
 
@@ -68,20 +70,18 @@ export function EmbaldesManager() {
 
       const formData = new FormData()
       formData.append('arquivo', arquivo)
-      formData.append('nome_embale', nomeEmbale)
+      formData.append('nome_embale', nomeInbound)
 
       const resposta = await api.post('/embaldes/upload', formData, {
-        headers: {
-          'Content-Type': 'multipart/form-data'
-        }
+        headers: { 'Content-Type': 'multipart/form-data' }
       })
 
-      setMessage(`✓ ${resposta.data.itens_validados}/${resposta.data.itens_processados} items vinculados à Olist`)
-      setNomeEmbale('')
+      const d = resposta.data
+      setMessage(`Inbound ${d.numero_inbound || ''} processado: ${d.itens_validados}/${d.itens_processados} items vinculados`)
+      setNomeInbound('')
       setArquivo(null)
 
-      // Recarregar lista
-      await carregarEmbaldes()
+      await carregarInbounds()
     } catch (erro: any) {
       const msgErro = erro.response?.data?.erro || String(erro)
       setMessage('Erro: ' + msgErro)
@@ -90,11 +90,15 @@ export function EmbaldesManager() {
     }
   }
 
-  const carregarDetalhesEmbale = async (emb: Embale) => {
+  const carregarDetalhes = async (inb: Inbound) => {
+    // Toggle: fecha se já estiver aberto
+    if (inboundSelecionado?.id === inb.id) {
+      setInboundSelecionado(null)
+      return
+    }
     try {
-      const resposta = await api.get(`/embaldes/${emb.id}`)
-      setEmbaleSelecionado(resposta.data)
-      setExpandidoDetalhes(true)
+      const resposta = await api.get(`/embaldes/${inb.id}`)
+      setInboundSelecionado(resposta.data)
     } catch (erro) {
       setMessage('Erro ao carregar detalhes: ' + String(erro))
     }
@@ -102,7 +106,7 @@ export function EmbaldesManager() {
 
   return (
     <div style={{ padding: '2rem' }}>
-      <h2>📦 Lista de Separação (Embaldes para FU)</h2>
+      <h2>Lista de Separação (Inbound ML FULL)</h2>
 
       {/* Formulário de Upload */}
       <div style={{
@@ -110,23 +114,28 @@ export function EmbaldesManager() {
         padding: '1.5rem',
         borderRadius: '8px',
         marginBottom: '2rem',
-        border: '2px dashed #ccc'
+        border: '1px solid #ddd'
       }}>
-        <h3>Fazer Upload de Embale</h3>
+        <h3 style={{ marginTop: 0 }}>Subir Inbound</h3>
+        <p style={{ color: '#666', fontSize: '0.9rem', marginBottom: '1.5rem' }}>
+          Envie o PDF de instruções de preparação do Mercado Livre FULL. O sistema lê o
+          SKU de cada produto e verifica se já existe um anúncio vinculado na Olist.
+        </p>
 
         <form onSubmit={handleUpload}>
           <div style={{ marginBottom: '1rem' }}>
-            <label style={{ fontWeight: 'bold' }}>Nome do Embale:</label>
+            <label style={{ fontWeight: 'bold', display: 'block', marginBottom: '0.5rem' }}>
+              Nome do Inbound:
+            </label>
             <input
               type="text"
-              placeholder="Ex: Embale Semana 1"
-              value={nomeEmbale}
-              onChange={(e) => setNomeEmbale(e.target.value)}
+              placeholder="Ex: Inbound Semana 1"
+              value={nomeInbound}
+              onChange={(e) => setNomeInbound(e.target.value)}
               disabled={loading}
               style={{
                 width: '100%',
                 padding: '0.75rem',
-                marginTop: '0.5rem',
                 border: '1px solid #ddd',
                 borderRadius: '4px',
                 fontSize: '1rem'
@@ -135,34 +144,32 @@ export function EmbaldesManager() {
           </div>
 
           <div style={{ marginBottom: '1rem' }}>
-            <label style={{ fontWeight: 'bold' }}>Arquivo PDF:</label>
+            <label style={{ fontWeight: 'bold', display: 'block', marginBottom: '0.5rem' }}>
+              Arquivo PDF:
+            </label>
             <div style={{
-              border: '2px solid #ddd',
+              border: '2px dashed #ccc',
               borderRadius: '4px',
               padding: '1.5rem',
               textAlign: 'center',
-              backgroundColor: '#fafafa',
-              cursor: 'pointer'
+              backgroundColor: '#fff'
             }}>
               <input
                 type="file"
                 accept=".pdf"
                 onChange={(e) => setArquivo(e.target.files?.[0] || null)}
                 disabled={loading}
-                style={{
-                  display: 'none'
-                }}
+                style={{ display: 'none' }}
                 id="pdf-input"
               />
               <label htmlFor="pdf-input" style={{ cursor: 'pointer', display: 'block' }}>
                 {arquivo ? (
-                  <div style={{ color: '#4CAF50', fontWeight: 'bold' }}>
-                    ✓ {arquivo.name}
+                  <div style={{ color: '#2e7d32', fontWeight: 'bold' }}>
+                    {arquivo.name}
                   </div>
                 ) : (
-                  <div>
-                    <div style={{ fontSize: '2rem', marginBottom: '0.5rem' }}>📄</div>
-                    <div style={{ color: '#666' }}>Clique ou arraste um PDF aqui</div>
+                  <div style={{ color: '#666' }}>
+                    Clique para selecionar um PDF
                   </div>
                 )}
               </label>
@@ -171,19 +178,19 @@ export function EmbaldesManager() {
 
           <button
             type="submit"
-            disabled={loading || !arquivo || !nomeEmbale}
+            disabled={loading || !arquivo || !nomeInbound}
             style={{
               padding: '0.9rem 2rem',
-              backgroundColor: loading ? '#ccc' : '#4CAF50',
+              backgroundColor: (loading || !arquivo || !nomeInbound) ? '#ccc' : '#1976D2',
               color: 'white',
               border: 'none',
               borderRadius: '4px',
-              cursor: loading ? 'not-allowed' : 'pointer',
+              cursor: (loading || !arquivo || !nomeInbound) ? 'not-allowed' : 'pointer',
               fontWeight: 'bold',
               fontSize: '1rem'
             }}
           >
-            {loading ? 'Processando...' : '📤 Fazer Upload'}
+            {loading ? 'Processando...' : 'Subir Inbound'}
           </button>
         </form>
 
@@ -191,8 +198,8 @@ export function EmbaldesManager() {
           <div style={{
             marginTop: '1rem',
             padding: '1rem',
-            backgroundColor: message.includes('Erro') ? '#ffebee' : '#e8f5e9',
-            color: message.includes('Erro') ? '#c62828' : '#2e7d32',
+            backgroundColor: message.toLowerCase().includes('erro') ? '#ffebee' : '#e8f5e9',
+            color: message.toLowerCase().includes('erro') ? '#c62828' : '#2e7d32',
             borderRadius: '4px',
             fontWeight: 'bold'
           }}>
@@ -201,100 +208,102 @@ export function EmbaldesManager() {
         )}
       </div>
 
-      {/* Lista de Embaldes */}
-      <h3>Embaldes Criados</h3>
+      {/* Lista de Inbounds */}
+      <h3>Inbounds Subidos</h3>
 
-      {embaldes.length === 0 ? (
+      {inbounds.length === 0 ? (
         <p style={{ color: '#999', textAlign: 'center', padding: '2rem' }}>
-          Nenhum embale criado ainda.
+          Nenhum inbound subido ainda.
         </p>
       ) : (
         <div style={{ display: 'grid', gap: '1rem' }}>
-          {embaldes.map((emb) => (
+          {inbounds.map((inb) => (
             <div
-              key={emb.id}
+              key={inb.id}
               style={{
                 border: '1px solid #ddd',
                 borderRadius: '8px',
                 padding: '1.5rem',
                 cursor: 'pointer',
-                backgroundColor: '#fafafa',
-                transition: 'all 0.3s'
+                backgroundColor: '#fff'
               }}
-              onClick={() => carregarDetalhesEmbale(emb)}
-              onMouseEnter={(e) => {
-                e.currentTarget.style.backgroundColor = '#f0f0f0'
-                e.currentTarget.style.boxShadow = '0 2px 4px rgba(0,0,0,0.1)'
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.backgroundColor = '#fafafa'
-                e.currentTarget.style.boxShadow = 'none'
-              }}
+              onClick={() => carregarDetalhes(inb)}
             >
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '2rem', alignItems: 'center' }}>
+              <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr', gap: '1.5rem', alignItems: 'center' }}>
                 <div>
-                  <div style={{ fontWeight: 'bold', fontSize: '1.1rem' }}>{emb.nome_embalde}</div>
-                  <div style={{ color: '#666', fontSize: '0.9rem', marginTop: '0.5rem' }}>
-                    {new Date(emb.data_upload).toLocaleDateString('pt-BR')}
+                  <div style={{ fontWeight: 'bold', fontSize: '1.1rem' }}>{inb.nome_embalde}</div>
+                  <div style={{ color: '#666', fontSize: '0.85rem', marginTop: '0.4rem' }}>
+                    {inb.numero_inbound ? `Frete #${inb.numero_inbound}` : 'Sem número'}
+                    {' · '}
+                    {new Date(inb.data_upload).toLocaleDateString('pt-BR')}
                   </div>
                 </div>
-                <div style={{ color: '#666', fontSize: '0.9rem' }}>
-                  {emb.arquivo_original}
+                <div style={{ color: '#666', fontSize: '0.85rem' }}>
+                  {inb.total_unidades ? `${Math.round(inb.total_unidades)} unidades` : ''}
                 </div>
-                <div style={{ textAlign: 'right', fontWeight: 'bold' }}>
+                <div style={{ textAlign: 'right' }}>
                   <div style={{
                     fontSize: '1.2rem',
-                    color: emb.qtd_validados === emb.qtd_items ? '#4CAF50' : '#ff9800'
+                    fontWeight: 'bold',
+                    color: inb.qtd_validados === inb.qtd_items ? '#2e7d32' : '#ef6c00'
                   }}>
-                    ✓ {emb.qtd_validados}/{emb.qtd_items}
+                    {inb.qtd_validados}/{inb.qtd_items}
                   </div>
-                  <div style={{ fontSize: '0.85rem', color: '#666', marginTop: '0.25rem' }}>
+                  <div style={{ fontSize: '0.8rem', color: '#666' }}>
                     items vinculados
                   </div>
                 </div>
               </div>
 
               {/* Detalhes expandidos */}
-              {expandidoDetalhes && embaleSelecionado?.id === emb.id && (
+              {inboundSelecionado?.id === inb.id && (
                 <div style={{
                   marginTop: '1.5rem',
                   paddingTop: '1.5rem',
                   borderTop: '1px solid #eee'
                 }}>
-                  <h4 style={{ marginTop: 0 }}>Items:</h4>
-                  <div style={{ display: 'grid', gap: '0.75rem', maxHeight: '400px', overflowY: 'auto' }}>
-                    {embaleSelecionado.itens?.map((item) => (
+                  <div style={{ display: 'grid', gap: '0.75rem' }}>
+                    {inboundSelecionado.itens?.map((item) => (
                       <div
                         key={item.id}
                         style={{
                           padding: '1rem',
-                          backgroundColor: item.validado ? '#e8f5e9' : '#fff3e0',
+                          backgroundColor: item.validado ? '#f1f8f4' : '#fff8f0',
                           borderRadius: '4px',
-                          borderLeft: `4px solid ${item.validado ? '#4CAF50' : '#ff9800'}`
+                          borderLeft: `4px solid ${item.validado ? '#2e7d32' : '#ef6c00'}`
                         }}
                       >
                         <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr auto', gap: '1rem', alignItems: 'center' }}>
                           <div>
-                            <div style={{ fontWeight: 'bold' }}>{item.titulo_anuncio}</div>
-                            {item.olist_nome && (
-                              <div style={{ fontSize: '0.85rem', color: '#666', marginTop: '0.25rem' }}>
-                                → {item.olist_nome}
+                            <div style={{ fontWeight: 'bold', fontSize: '0.95rem' }}>
+                              {item.titulo_anuncio}
+                            </div>
+                            <div style={{ fontSize: '0.82rem', color: '#666', marginTop: '0.3rem' }}>
+                              SKU: <strong>{item.sku_inbound || '—'}</strong>
+                              {item.codigo_ml ? ` · ML: ${item.codigo_ml}` : ''}
+                            </div>
+                            {!item.validado && item.validacao_mensagem && (
+                              <div style={{ fontSize: '0.8rem', color: '#ef6c00', marginTop: '0.3rem' }}>
+                                {item.validacao_mensagem}
                               </div>
                             )}
                           </div>
                           <div style={{ textAlign: 'center' }}>
-                            <div style={{ fontWeight: 'bold', fontSize: '1.1rem' }}>{Math.round(item.quantidade_separada)}</div>
-                            <div style={{ fontSize: '0.8rem', color: '#666' }}>un</div>
+                            <div style={{ fontWeight: 'bold', fontSize: '1.1rem' }}>
+                              {Math.round(item.quantidade_separada)}
+                            </div>
+                            <div style={{ fontSize: '0.78rem', color: '#666' }}>unidades</div>
                           </div>
                           <div style={{
-                            padding: '0.4rem 0.8rem',
-                            backgroundColor: item.validado ? '#4CAF50' : '#ff9800',
+                            padding: '0.4rem 0.9rem',
+                            backgroundColor: item.validado ? '#2e7d32' : '#ef6c00',
                             color: 'white',
                             borderRadius: '4px',
-                            fontSize: '0.85rem',
-                            fontWeight: 'bold'
+                            fontSize: '0.82rem',
+                            fontWeight: 'bold',
+                            whiteSpace: 'nowrap'
                           }}>
-                            {item.validado ? '✓' : '⚠'}
+                            {item.validado ? 'Vinculado' : 'Sem vínculo'}
                           </div>
                         </div>
                       </div>

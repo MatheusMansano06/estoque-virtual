@@ -1374,22 +1374,21 @@ async def olist_callback(request: Request):
         """, status_code=500)
 
 
-# ==================== ENDPOINTS EMBALDES/LISTA DE SEPARAÇÃO ====================
+# ==================== ENDPOINTS INBOUND / LISTA DE SEPARAÇÃO ====================
 
 async def upload_embale(request: Request):
     """
     POST /api/embaldes/upload
-    Faz upload de um PDF de lista de separação (embalde para FU)
-    Extrai os items e vincula automaticamente com anúncios Olist já vinculados
+    Faz upload de um PDF de Inbound do Mercado Livre (lista de separação).
+    Extrai os items (SKU, código ML, título, unidades) e vincula
+    automaticamente com anúncios Olist via SKU.
     """
+    db = SessionLocal()
     try:
-        db = SessionLocal()
-
         # Receber arquivo
         form = await request.form()
         arquivo = form.get("arquivo")
-        nome_embale = form.get("nome_embale", "Embale sem nome")
-        observacoes = form.get("observacoes", "")
+        nome_embale = form.get("nome_embale") or "Inbound sem nome"
 
         if not arquivo:
             return JSONResponse({"erro": "Arquivo não fornecido"}, status_code=400)
@@ -1406,9 +1405,24 @@ async def upload_embale(request: Request):
         with open(caminho_arquivo, 'wb') as f:
             f.write(conteudo)
 
-        # Criar embale no BD
+        # Extrair items do PDF ANTES de criar o registro
+        resultado = extrair_items_embale_pdf(caminho_arquivo)
+
+        if isinstance(resultado, dict) and resultado.get("erro"):
+            return JSONResponse(
+                {"erro": resultado.get("mensagem", "Erro ao processar PDF")},
+                status_code=400
+            )
+
+        items_extraidos = resultado.get("items", [])
+        numero_inbound = resultado.get("numero_inbound")
+        total_unidades = resultado.get("total_unidades", 0)
+
+        # Criar inbound no BD
         embale = EmbaleFU(
             nome_embalde=nome_embale,
+            numero_inbound=numero_inbound,
+            total_unidades=total_unidades,
             arquivo_original=arquivo.filename,
             arquivo_uuid=arquivo_uuid
         )
@@ -1416,47 +1430,54 @@ async def upload_embale(request: Request):
         db.commit()
         db.refresh(embale)
 
-        # Extrair items do PDF
-        items_extraidos = extrair_items_embale_pdf(caminho_arquivo)
-
-        if isinstance(items_extraidos, dict) and "erro" in items_extraidos:
-            return JSONResponse(items_extraidos, status_code=400)
-
         # Processar cada item
         items_processados = 0
         items_validados = 0
         items_com_erro = []
 
         for item_data in items_extraidos:
-            titulo = item_data.get("titulo_anuncio", "").strip()
+            sku = (item_data.get("sku") or "").strip()
+            codigo_ml = (item_data.get("codigo_ml") or "").strip()
+            titulo = (item_data.get("titulo_anuncio") or "").strip()
             qtd = item_data.get("quantidade_separada", 0)
-
-            # Procurar vínculo Olist com esse título
-            vinculo = db.query(VinculoOlist).filter(
-                VinculoOlist.olist_nome.ilike(f"%{titulo}%")
-            ).first()
 
             item_embale = ItemEmbaleFU(
                 embalde_id=embale.id,
                 titulo_anuncio=titulo,
                 quantidade_separada=qtd,
+                sku_inbound=sku or None,
+                codigo_ml=codigo_ml or None,
                 validado=0
             )
+
+            # 1) Match primário por SKU (exato, case-insensitive)
+            vinculo = None
+            if sku:
+                vinculo = db.query(VinculoOlist).filter(
+                    VinculoOlist.olist_sku.ilike(sku)
+                ).first()
+
+            # 2) Fallback: match por título do anúncio
+            if not vinculo and titulo:
+                vinculo = db.query(VinculoOlist).filter(
+                    VinculoOlist.olist_nome.ilike(f"%{titulo}%")
+                ).first()
 
             if vinculo:
                 item_embale.olist_produto_id = vinculo.olist_produto_id
                 item_embale.olist_sku = vinculo.olist_sku
                 item_embale.olist_nome = vinculo.olist_nome
                 item_embale.validado = 1
-                item_embale.validacao_mensagem = "Anúncio Olist vinculado encontrado"
+                item_embale.validacao_mensagem = f"Vinculado via SKU {vinculo.olist_sku}"
+                item_embale.data_validacao = datetime.utcnow()
                 items_validados += 1
             else:
                 item_embale.validado = 0
-                item_embale.validacao_mensagem = "Nenhum anúncio Olist vinculado encontrado com esse título"
-                items_com_erro.append({
-                    "titulo": titulo,
-                    "erro": "Anúncio não vinculado"
-                })
+                item_embale.validacao_mensagem = (
+                    f"SKU '{sku}' não encontrado nos vínculos Olist" if sku
+                    else "Item sem SKU identificável"
+                )
+                items_com_erro.append({"sku": sku, "titulo": titulo})
 
             db.add(item_embale)
             items_processados += 1
@@ -1465,16 +1486,19 @@ async def upload_embale(request: Request):
 
         return JSONResponse({
             "id": embale.id,
-            "nome_embale": embale.nome_embale,
+            "nome_embale": embale.nome_embalde,
+            "numero_inbound": numero_inbound,
+            "total_unidades": total_unidades,
             "status": "processado",
             "itens_processados": items_processados,
             "itens_validados": items_validados,
             "itens_com_erro": len(items_com_erro),
             "erros": items_com_erro if items_com_erro else None,
-            "mensagem": f"Embale criado com {items_validados} items validados"
+            "mensagem": f"Inbound {numero_inbound or ''} processado: {items_validados}/{items_processados} items vinculados"
         })
 
     except Exception as e:
+        db.rollback()
         return JSONResponse({"erro": str(e)}, status_code=500)
     finally:
         db.close()
@@ -1507,11 +1531,12 @@ async def listar_embaldes(request: Request):
             "items": [
                 {
                     "id": e.id,
-                    "nome_embale": e.nome_embale,
+                    "nome_embalde": e.nome_embalde,
+                    "numero_inbound": e.numero_inbound,
+                    "total_unidades": e.total_unidades,
                     "arquivo_original": e.arquivo_original,
                     "data_upload": e.data_upload.isoformat(),
                     "status": e.status,
-                    "observacoes": e.observacoes,
                     "qtd_items": len(e.itens),
                     "qtd_validados": sum(1 for i in e.itens if i.validado == 1)
                 }
@@ -1541,16 +1566,19 @@ async def obter_embale(request: Request):
 
         return JSONResponse({
             "id": embale.id,
-            "nome_embale": embale.nome_embale,
+            "nome_embalde": embale.nome_embalde,
+            "numero_inbound": embale.numero_inbound,
+            "total_unidades": embale.total_unidades,
             "arquivo_original": embale.arquivo_original,
             "data_upload": embale.data_upload.isoformat(),
             "status": embale.status,
-            "observacoes": embale.observacoes,
             "itens": [
                 {
                     "id": i.id,
                     "titulo_anuncio": i.titulo_anuncio,
                     "quantidade_separada": i.quantidade_separada,
+                    "sku_inbound": i.sku_inbound,
+                    "codigo_ml": i.codigo_ml,
                     "olist_produto_id": i.olist_produto_id,
                     "olist_sku": i.olist_sku,
                     "olist_nome": i.olist_nome,

@@ -1,34 +1,67 @@
 """
-Parser para arquivos PDF de embaldes/listas de separação
-Extrai título do anúncio e quantidade separada
+Parser para arquivos PDF de Inbound do Mercado Livre FULL
+(Lista de produtos e instrucoes de preparacao)
+
+Extrai por produto: SKU, Codigo ML, titulo e quantidade de unidades.
+Usa extracao de tabela (pdfplumber) pois o PDF do ML e texto real,
+nao imagem escaneada.
 """
 
-import pytesseract
-from pdf2image import convert_from_path
-from PIL import Image
+import pdfplumber
 import re
-from typing import List, Tuple
+from typing import List
 
-def extrair_items_embale_pdf(caminho_pdf: str) -> List[dict]:
+
+def extrair_items_embale_pdf(caminho_pdf: str) -> dict:
     """
-    Extrai items de um PDF de lista de separação
-    Tenta identificar padrões de: "Título do Produto | Quantidade"
+    Extrai items de um PDF de Inbound do Mercado Livre.
 
-    Retorna: [{"titulo_anuncio": str, "quantidade_separada": float}, ...]
+    Retorna:
+      {
+        "numero_inbound": str,
+        "total_unidades": int,
+        "items": [
+          {"sku", "codigo_ml", "titulo_anuncio", "quantidade_separada"}, ...
+        ]
+      }
+    ou {"erro": True, "mensagem": "..."} em caso de falha.
     """
     try:
-        # Converter PDF para imagens
-        imagens = convert_from_path(caminho_pdf)
-        texto_completo = ""
+        items = []
+        numero_inbound = None
+        total_unidades = 0
 
-        # OCR cada página
-        for imagem in imagens:
-            texto = pytesseract.image_to_string(imagem, lang='por')
-            texto_completo += texto + "\n"
+        with pdfplumber.open(caminho_pdf) as pdf:
+            for page in pdf.pages:
+                texto = page.extract_text() or ""
 
-        # Extrair items
-        items = _parsear_texto_embale(texto_completo)
-        return items
+                # Numero do inbound (Frete #XXXXX)
+                if numero_inbound is None:
+                    m = re.search(r'Frete\s*#?\s*(\d+)', texto)
+                    if m:
+                        numero_inbound = m.group(1)
+
+                # Total de unidades
+                m_total = re.search(r'Total de unidades:\s*(\d+)', texto)
+                if m_total:
+                    total_unidades = int(m_total.group(1))
+
+                # Extrair tabelas de produtos
+                for tabela in page.extract_tables():
+                    items_tabela = _parsear_tabela_produtos(tabela)
+                    items.extend(items_tabela)
+
+        if not items:
+            return {
+                "erro": True,
+                "mensagem": "Nenhum produto encontrado no PDF. Verifique se e um Inbound valido do Mercado Livre."
+            }
+
+        return {
+            "numero_inbound": numero_inbound,
+            "total_unidades": total_unidades,
+            "items": items
+        }
 
     except Exception as e:
         return {
@@ -37,73 +70,66 @@ def extrair_items_embale_pdf(caminho_pdf: str) -> List[dict]:
         }
 
 
-def _parsear_texto_embale(texto: str) -> List[dict]:
+def _parsear_tabela_produtos(tabela: List[list]) -> List[dict]:
     """
-    Parseia texto OCR para extrair items da lista de separação
-    Padrões esperados:
-    - "Produto XYZ | 100"
-    - "Produto XYZ 100"
-    - "SKU: PRODUTO | QTD: 100"
+    Parseia uma tabela extraida do PDF.
+    A tabela do ML tem colunas: PRODUTO | UNIDADES | IDENTIFICACAO | INSTRUCOES
+    A coluna PRODUTO contem (multiline):
+      Codigo ML: XXXXX Codigo universal:
+      EAN SKU: YYYYY
+      Titulo do produto...
     """
     items = []
-    linhas = texto.split('\n')
 
-    for linha in linhas:
-        linha = linha.strip()
-        if not linha or len(linha) < 5:
+    if not tabela or len(tabela) < 2:
+        return items
+
+    # Confirmar que e a tabela de produtos (cabecalho com PRODUTO)
+    header = tabela[0]
+    if not header or "PRODUTO" not in str(header[0] or "").upper():
+        return items
+
+    for row in tabela[1:]:
+        if not row or len(row) < 2:
             continue
 
-        # Padrão 1: "algo | número"
-        if '|' in linha:
-            partes = linha.split('|')
-            if len(partes) >= 2:
-                titulo = partes[0].strip()
-                qtd_str = partes[-1].strip()
-                qtd = _extrair_quantidade(qtd_str)
+        celula_produto = row[0] or ""
+        celula_unidades = row[1] or ""
 
-                if qtd and titulo and len(titulo) > 3:
-                    items.append({
-                        "titulo_anuncio": titulo,
-                        "quantidade_separada": qtd,
-                        "validado": 0,
-                        "validacao_mensagem": None
-                    })
+        if not celula_produto.strip():
+            continue
 
-        # Padrão 2: última palavra é número
-        else:
-            partes = linha.rsplit(' ', 1)
-            if len(partes) == 2:
-                titulo = partes[0].strip()
-                qtd_str = partes[1].strip()
-                qtd = _extrair_quantidade(qtd_str)
+        # SKU
+        sku_m = re.search(r'SKU:\s*(\S+)', celula_produto)
+        sku = sku_m.group(1).strip() if sku_m else None
 
-                if qtd and titulo and len(titulo) > 3:
-                    items.append({
-                        "titulo_anuncio": titulo,
-                        "quantidade_separada": qtd,
-                        "validado": 0,
-                        "validacao_mensagem": None
-                    })
+        # Codigo ML
+        ml_m = re.search(r'C[oó]digo ML:\s*(\S+)', celula_produto)
+        codigo_ml = ml_m.group(1).strip() if ml_m else None
 
-    # Remover duplicatas
-    items_unicos = []
-    titles_vistos = set()
-    for item in items:
-        if item["titulo_anuncio"] not in titles_vistos:
-            items_unicos.append(item)
-            titles_vistos.add(item["titulo_anuncio"])
+        # Quantidade (primeiro numero da coluna UNIDADES)
+        uni_m = re.search(r'\d+', celula_unidades)
+        quantidade = float(uni_m.group(0)) if uni_m else 0
 
-    return items_unicos
+        # Titulo: linhas que NAO sao de codigo/SKU
+        linhas = celula_produto.split("\n")
+        titulo_linhas = []
+        for linha in linhas:
+            ls = linha.strip()
+            if not ls:
+                continue
+            if "SKU:" in ls or "Código" in ls or "Codigo" in ls:
+                continue
+            titulo_linhas.append(ls)
+        titulo = " ".join(titulo_linhas).strip()
 
+        # So adiciona se tiver pelo menos SKU ou titulo
+        if sku or titulo:
+            items.append({
+                "sku": sku,
+                "codigo_ml": codigo_ml,
+                "titulo_anuncio": titulo or (sku or "Produto sem titulo"),
+                "quantidade_separada": quantidade
+            })
 
-def _extrair_quantidade(texto: str) -> float:
-    """Extrai número float do texto"""
-    try:
-        # Remover tudo que não é número ou ponto
-        numeros = re.findall(r'\d+[.,]?\d*', texto)
-        if numeros:
-            quantidade = numeros[0].replace(',', '.')
-            return float(quantidade)
-    except:
-        pass
-    return None
+    return items

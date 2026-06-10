@@ -178,13 +178,15 @@ class NotificacaoFornecedor(Base):
 
 class EmbaleFU(Base):
     """
-    Lista de separação (embalde) para Fulfillment
-    Arquivo PDF com produtos que já foram separados fisicamente
+    Inbound do Mercado Livre FULL (lista de separação)
+    PDF com produtos já separados fisicamente para envio ao Fulfillment
     """
     __tablename__ = "embaldes_fu"
 
     id = Column(Integer, primary_key=True)
     nome_embalde = Column(String(255), index=True)
+    numero_inbound = Column(String(50), nullable=True, index=True)  # Frete #XXXXX do ML
+    total_unidades = Column(Float, nullable=True)  # Total declarado no PDF
     arquivo_original = Column(String(255))
     arquivo_uuid = Column(String(255), unique=True)  # Nome único no sistema
     data_upload = Column(DateTime, default=datetime.utcnow)
@@ -196,15 +198,19 @@ class EmbaleFU(Base):
 
 class ItemEmbaleFU(Base):
     """
-    Item dentro de um embalde/lista de separação
-    Cada item vincula-se automaticamente a um anúncio Olist se existir vínculo
+    Item dentro de um inbound (lista de separação)
+    Vincula-se automaticamente a um anúncio Olist via SKU se existir vínculo
     """
     __tablename__ = "itens_embale_fu"
 
     id = Column(Integer, primary_key=True)
     embalde_id = Column(Integer, ForeignKey("embaldes_fu.id"))
-    titulo_anuncio = Column(String(255), index=True)  # Título do anúncio (como vem do PDF)
+    titulo_anuncio = Column(String(255), index=True)  # Título do produto (como vem do PDF)
     quantidade_separada = Column(Float)
+
+    # Dados extraídos do PDF do Inbound
+    sku_inbound = Column(String(100), nullable=True, index=True)  # SKU declarado no PDF
+    codigo_ml = Column(String(100), nullable=True)  # Código ML (ex: GJRN27301)
 
     # Vinculação automática com Olist
     olist_produto_id = Column(String(100), nullable=True)  # ID do produto Olist

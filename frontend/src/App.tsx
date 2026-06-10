@@ -1041,7 +1041,7 @@ function App() {
                       el.style.borderColor = '#ddd'
                     }}
                   >
-                    📦 Lista de Separação
+                    Inbound
                   </button>
                 </div>
               </div>
@@ -3044,8 +3044,8 @@ function App() {
           <div className="container">
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <div>
-                <h1>📦 LISTA DE SEPARAÇÃO (EMBALDES)</h1>
-                <p>Gerencie listas de separação para envio ao Marketplace</p>
+                <h1>INBOUND (LISTA DE SEPARAÇÃO)</h1>
+                <p>Suba os inbounds do Mercado Livre FULL antes da nota fiscal</p>
               </div>
               <button
                 onClick={() => setPagina('inicial')}
