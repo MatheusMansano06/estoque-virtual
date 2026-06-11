@@ -63,6 +63,7 @@ export function EmbaldesManager() {
   const [message, setMessage] = useState('')
   const [nomeInbound, setNomeInbound] = useState('')
   const [dataLimite, setDataLimite] = useState('')
+  const [semData, setSemData] = useState(true)
   const [arquivo, setArquivo] = useState<File | null>(null)
   const [inboundSelecionado, setInboundSelecionado] = useState<Inbound | null>(null)
   const [aba, setAba] = useState<Aba>('processando')
@@ -119,6 +120,7 @@ export function EmbaldesManager() {
       setMessage(`Inbound ${d.numero_inbound || ''} processado: ${d.itens_validados}/${d.itens_processados} items vinculados`)
       setNomeInbound('')
       setDataLimite('')
+      setSemData(true)
       setArquivo(null)
 
       await carregarInbounds()
@@ -211,8 +213,12 @@ export function EmbaldesManager() {
     return new Date(iso).toLocaleDateString('pt-BR')
   }
 
-  const inboundsFiltrados = inbounds.filter((i) => i.status === aba)
-  const countProcessando = inbounds.filter((i) => i.status === 'processando').length
+  // "valendo" e "processando" são ambos ativos (não encerrados)
+  const ehAtivo = (status: string) => status !== 'encerrado'
+  const inboundsFiltrados = inbounds.filter((i) =>
+    aba === 'encerrado' ? i.status === 'encerrado' : ehAtivo(i.status)
+  )
+  const countProcessando = inbounds.filter((i) => ehAtivo(i.status)).length
   const countEncerrado = inbounds.filter((i) => i.status === 'encerrado').length
 
   return (
@@ -256,9 +262,18 @@ export function EmbaldesManager() {
                 type="date"
                 value={dataLimite}
                 onChange={(e) => setDataLimite(e.target.value)}
-                disabled={loading}
-                style={{ width: '100%', padding: '0.75rem', border: '1px solid #ddd', borderRadius: '4px', fontSize: '1rem' }}
+                disabled={loading || semData}
+                style={{ width: '100%', padding: '0.75rem', border: '1px solid #ddd', borderRadius: '4px', fontSize: '1rem', backgroundColor: semData ? '#f0f0f0' : '#fff', color: semData ? '#999' : '#000' }}
               />
+              <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', marginTop: '0.5rem', cursor: 'pointer', fontSize: '0.88rem', color: '#555' }}>
+                <input
+                  type="checkbox"
+                  checked={semData}
+                  onChange={(e) => { setSemData(e.target.checked); if (e.target.checked) setDataLimite('') }}
+                  disabled={loading}
+                />
+                Sem data ainda (fica como <strong style={{ color: '#1565c0' }}>&nbsp;valendo</strong>)
+              </label>
             </div>
           </div>
 
@@ -333,7 +348,7 @@ export function EmbaldesManager() {
             marginBottom: '-2px'
           }}
         >
-          Processando ({countProcessando})
+          Ativos ({countProcessando})
         </button>
         <button
           onClick={() => setAba('encerrado')}
@@ -385,7 +400,7 @@ export function EmbaldesManager() {
                 {/* Data limite */}
                 <div style={{ fontSize: '0.85rem' }} onClick={(e) => e.stopPropagation()}>
                   {editandoData === inb.id ? (
-                    <div style={{ display: 'flex', gap: '0.4rem', alignItems: 'center' }}>
+                    <div style={{ display: 'flex', gap: '0.4rem', alignItems: 'center', flexWrap: 'wrap' }}>
                       <input
                         type="date"
                         value={novaData}
@@ -393,13 +408,20 @@ export function EmbaldesManager() {
                         style={{ padding: '0.4rem', border: '1px solid #ddd', borderRadius: '4px' }}
                       />
                       <button onClick={() => salvarData(inb.id)} style={{ padding: '0.4rem 0.7rem', background: '#1976D2', color: '#fff', border: 'none', borderRadius: '4px', cursor: 'pointer' }}>OK</button>
+                      <button onClick={() => { setNovaData(''); salvarData(inb.id) }} title="Volta para VALENDO (sem data)" style={{ padding: '0.4rem 0.7rem', background: '#fff', color: '#1565c0', border: '1px solid #1565c0', borderRadius: '4px', cursor: 'pointer', fontSize: '0.78rem' }}>Sem data</button>
                       <button onClick={() => { setEditandoData(null); setNovaData('') }} style={{ padding: '0.4rem 0.7rem', background: '#eee', border: 'none', borderRadius: '4px', cursor: 'pointer' }}>x</button>
                     </div>
                   ) : (
                     <div>
                       <span style={{ color: '#666' }}>Envio FULL: </span>
-                      <strong>{formatarData(inb.data_limite) || 'sem data'}</strong>
-                      {inb.status === 'processando' && (
+                      {inb.status === 'valendo' ? (
+                        <span style={{ padding: '0.15rem 0.5rem', background: '#e3f2fd', color: '#1565c0', borderRadius: '4px', fontWeight: 'bold', fontSize: '0.8rem' }}>
+                          VALENDO (sem data)
+                        </span>
+                      ) : (
+                        <strong>{formatarData(inb.data_limite) || 'sem data'}</strong>
+                      )}
+                      {ehAtivo(inb.status) && (
                         <button
                           onClick={() => { setEditandoData(inb.id); setNovaData(inb.data_limite?.slice(0, 10) || '') }}
                           style={{ marginLeft: '0.5rem', padding: '0.2rem 0.5rem', background: 'none', border: '1px solid #ddd', borderRadius: '4px', cursor: 'pointer', fontSize: '0.78rem' }}
@@ -432,7 +454,7 @@ export function EmbaldesManager() {
                   >
                     {revisandoId === inb.id ? 'Fechar revisão' : 'Revisar Olist'}
                   </button>
-                  {inb.status === 'processando' ? (
+                  {ehAtivo(inb.status) ? (
                     <button
                       onClick={() => encerrarInbound(inb.id)}
                       style={{ padding: '0.5rem 1rem', background: '#fff', color: '#c62828', border: '1px solid #c62828', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold', fontSize: '0.85rem', whiteSpace: 'nowrap' }}
