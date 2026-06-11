@@ -105,6 +105,8 @@ function App() {
     estoque_reservado: 0
   })
   const [produtoConferindoAtualmente, setProdutoConferindoAtualmente] = useState<ItemNota | null>(null)
+  // Controla se o formulário de preenchimento manual está aberto (botão)
+  const [mostrarManual, setMostrarManual] = useState(false)
   // Memória de vínculos (de-para fornecedor -> Olist)
   const [sugestaoVinculo, setSugestaoVinculo] = useState<any>(null)
   const [sugestaoDispensada, setSugestaoDispensada] = useState(false)
@@ -303,6 +305,7 @@ function App() {
     })
     setProdutoOlistSKU('')
     setSugestoesSKU([])
+    setMostrarManual(false)
     setModalOpen(false)
     setNotaDetalheAberta(null)
     setPagina('relacionamento_produto')
@@ -390,6 +393,7 @@ function App() {
     setProdutoOlistSelecionado({ id: '', sku: '', nome: '', preco: 0, estoque: 0, estoque_saldo: 0, estoque_reservado: 0 })
     setProdutoOlistSKU('')
     setSugestoesSKU([])
+    setMostrarManual(false)
     setNotaDetalheAberta(null)
     setPagina('relacionamento_produto')
   }
@@ -1497,6 +1501,7 @@ function App() {
                               })
                               setProdutoOlistSKU('')
                               setSugestoesSKU([])
+                              setMostrarManual(false)
                               setPagina('relacionamento_produto')
                             }}
                             style={{
@@ -2687,20 +2692,6 @@ function App() {
               </div>
             )}
 
-            {/* STATUS: BUSCA OLIST ATIVA */}
-            <div style={{
-              background: '#e8f5e9',
-              border: '2px solid #4caf50',
-              padding: '1rem 1.5rem',
-              borderRadius: '8px',
-              marginBottom: '1.5rem'
-            }}>
-              <p style={{ color: '#2e7d32', fontWeight: 700, margin: 0 }}>✅ Busca de Produtos Olist Ativa</p>
-              <p style={{ color: '#558b2f', fontSize: '0.9rem', margin: '0.5rem 0 0 0' }}>
-                Suas credenciais estão configuradas. Digite o SKU ou nome do produto para buscar automaticamente.
-              </p>
-            </div>
-
             {/* BUSCA DE SKU OLIST */}
             <div className="form-group" style={{ position: 'relative' }}>
               <label className="form-label">Buscar Anúncio Olist (por SKU ou Nome) - <span style={{color: '#999', fontSize: '0.85rem'}}>opcional</span></label>
@@ -2795,8 +2786,30 @@ function App() {
               )}
             </div>
 
-            {/* MODO MANUAL - SEMPRE DISPONÍVEL */}
-            {!produtoOlistSelecionado.sku && (
+            {/* BOTÃO PARA ABRIR O PREENCHIMENTO MANUAL */}
+            {!produtoOlistSelecionado.sku && !mostrarManual && (
+              <button
+                type="button"
+                onClick={() => setMostrarManual(true)}
+                style={{
+                  background: '#fff',
+                  border: '2px solid #007acc',
+                  color: '#007acc',
+                  padding: '0.75rem 1.25rem',
+                  borderRadius: '8px',
+                  fontWeight: 700,
+                  cursor: 'pointer',
+                  marginTop: '1rem',
+                  marginBottom: '1.5rem',
+                  fontSize: '0.95rem'
+                }}
+              >
+                📝 Preencher dados manualmente
+              </button>
+            )}
+
+            {/* MODO MANUAL - ABRE AO CLICAR NO BOTÃO */}
+            {!produtoOlistSelecionado.sku && mostrarManual && (
               <div style={{
                 background: '#f0f9ff',
                 border: '2px solid #007acc',
@@ -2805,8 +2818,18 @@ function App() {
                 marginTop: '1.5rem',
                 marginBottom: '1.5rem'
               }}>
-                <h3 style={{ color: '#007acc', marginTop: 0 }}>📝 Preencher Dados do Anúncio Manualmente</h3>
-                <p style={{ color: '#666', fontSize: '0.9rem', marginBottom: '1.5rem' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <h3 style={{ color: '#007acc', marginTop: 0, marginBottom: 0 }}>📝 Preencher Dados do Anúncio Manualmente</h3>
+                  <button
+                    type="button"
+                    onClick={() => setMostrarManual(false)}
+                    style={{ background: 'none', border: 'none', color: '#999', fontSize: '1.3rem', cursor: 'pointer', lineHeight: 1 }}
+                    title="Fechar preenchimento manual"
+                  >
+                    ×
+                  </button>
+                </div>
+                <p style={{ color: '#666', fontSize: '0.9rem', margin: '0.5rem 0 1.5rem 0' }}>
                   Copie os dados do anúncio da sua Olist e preencha abaixo (funciona melhor que a busca automática no momento):
                 </p>
 
