@@ -107,6 +107,9 @@ function App() {
   const [produtoConferindoAtualmente, setProdutoConferindoAtualmente] = useState<ItemNota | null>(null)
   // Controla se o formulário de preenchimento manual está aberto (botão)
   const [mostrarManual, setMostrarManual] = useState(false)
+  // Reserva de inbound ativo para o produto selecionado (regra do FULL)
+  const [reservaInbound, setReservaInbound] = useState(0)
+  const [reservaInboundInbs, setReservaInboundInbs] = useState('')
   // Memória de vínculos (de-para fornecedor -> Olist)
   const [sugestaoVinculo, setSugestaoVinculo] = useState<any>(null)
   const [sugestaoDispensada, setSugestaoDispensada] = useState(false)
@@ -148,6 +151,27 @@ function App() {
         .catch(() => {})
     }
   }, [pagina, produtoSelecionado])
+
+  // Quando um anúncio Olist é selecionado, verifica se esse produto está
+  // separado em algum inbound ATIVO (regra do FULL) para mostrar no preview.
+  useEffect(() => {
+    if (!produtoOlistSelecionado.sku && !produtoOlistSelecionado.id) {
+      setReservaInbound(0)
+      setReservaInboundInbs('')
+      return
+    }
+    const params = new URLSearchParams({
+      olist_produto_id: produtoOlistSelecionado.id || '',
+      olist_sku: produtoOlistSelecionado.sku || ''
+    })
+    fetch(`http://127.0.0.1:8000/api/embaldes/reserva-produto?${params}`)
+      .then((r) => r.json())
+      .then((d) => {
+        setReservaInbound(Math.round(d.reservado_full || 0))
+        setReservaInboundInbs((d.detalhes || []).map((x: any) => `#${x.numero_inbound}`).join(', '))
+      })
+      .catch(() => { setReservaInbound(0); setReservaInboundInbs('') })
+  }, [produtoOlistSelecionado.id, produtoOlistSelecionado.sku])
 
   // Usa a sugestão: busca dados frescos (estoque) do anúncio e seleciona
   const usarSugestao = async () => {
@@ -730,14 +754,37 @@ function App() {
 
     const qtdNF = Math.round(produtoSelecionado.quantidade_nf)
     const saldoAtual = produtoOlistSelecionado.estoque_saldo
-    const novoSaldo = saldoAtual + qtdNF
+
+    // REGRA DO INBOUND: verifica se este produto está separado para FULL
+    // em algum inbound ativo (que ainda não deu baixa). Se estiver, segura
+    // essa quantidade — sobe na Olist só o restante.
+    let reservaFull = 0
+    let reservaInfo = ''
+    try {
+      const params = new URLSearchParams({
+        olist_produto_id: produtoOlistSelecionado.id || '',
+        olist_sku: produtoOlistSelecionado.sku || ''
+      })
+      const resR = await fetch(`http://127.0.0.1:8000/api/embaldes/reserva-produto?${params}`)
+      const dataR = await resR.json()
+      reservaFull = Math.round(dataR.reservado_full || 0)
+      if (reservaFull > 0) {
+        const inbs = (dataR.detalhes || []).map((d: any) => `#${d.numero_inbound}`).join(', ')
+        reservaInfo = `\n⚠️ ${reservaFull} un estão num inbound ativo (${inbs}) e serão SEGURADAS pro FULL.\n`
+      }
+    } catch { /* se falhar, segue sem reserva */ }
+
+    const qtdSubir = Math.max(0, qtdNF - reservaFull)
+    const novoSaldo = saldoAtual + qtdSubir
 
     const confirmar = window.confirm(
       `Confirmar atualização de estoque na Olist?\n\n` +
       `Produto: ${produtoOlistSelecionado.nome}\n` +
       `SKU: ${produtoOlistSelecionado.sku}\n\n` +
       `Estoque atual na Olist: ${saldoAtual} un\n` +
-      `+ Quantidade da NF: ${qtdNF} un\n` +
+      `Quantidade da NF: ${qtdNF} un\n` +
+      reservaInfo +
+      `→ Vai subir na Olist: ${qtdSubir} un\n` +
       `= Novo estoque total: ${novoSaldo} un\n\n` +
       `Deseja continuar?`
     )
@@ -778,11 +825,7 @@ function App() {
 
       const dataEst = await resEst.json()
       if (resEst.ok && dataEst.sucesso) {
-        alert(
-          `✅ Sucesso!\n\n` +
-          `Produto vinculado e estoque atualizado na Olist.\n` +
-          `Novo estoque: ${novoSaldo} unidades`
-        )
+        alert(`✅ Sucesso!\n\n${dataEst.mensagem || 'Produto vinculado e estoque atualizado na Olist.'}`)
         // Recarregar dados
         await loadNotas()
         await loadDivergencias()
@@ -2945,28 +2988,48 @@ function App() {
                 marginBottom: '1.5rem'
               }}>
                 <h3 style={{ color: '#2e7d32', marginTop: 0 }}>Atualização de Estoque</h3>
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-around', textAlign: 'center', flexWrap: 'wrap', gap: '1rem' }}>
-                  <div>
-                    <p style={{ color: '#666', fontSize: '0.8rem', fontWeight: '600', margin: 0 }}>ESTOQUE ATUAL OLIST</p>
-                    <p style={{ color: '#1a1a1a', fontSize: '1.5rem', fontWeight: '700', margin: 0 }}>
-                      {produtoOlistSelecionado.estoque_saldo}
-                    </p>
-                  </div>
-                  <div style={{ fontSize: '1.5rem', color: '#4caf50', fontWeight: '700' }}>+</div>
-                  <div>
-                    <p style={{ color: '#666', fontSize: '0.8rem', fontWeight: '600', margin: 0 }}>QTD RECEBIDA (A SUBIR)</p>
-                    <p style={{ color: '#007acc', fontSize: '1.5rem', fontWeight: '700', margin: 0 }}>
-                      {Math.round(produtoSelecionado.quantidade_nf)}
-                    </p>
-                  </div>
-                  <div style={{ fontSize: '1.5rem', color: '#4caf50', fontWeight: '700' }}>=</div>
-                  <div>
-                    <p style={{ color: '#666', fontSize: '0.8rem', fontWeight: '600', margin: 0 }}>NOVO ESTOQUE TOTAL</p>
-                    <p style={{ color: '#2e7d32', fontSize: '1.8rem', fontWeight: '800', margin: 0 }}>
-                      {produtoOlistSelecionado.estoque_saldo + Math.round(produtoSelecionado.quantidade_nf)}
-                    </p>
-                  </div>
-                </div>
+                {(() => {
+                  const qtdNF = Math.round(produtoSelecionado.quantidade_nf)
+                  const reserva = Math.min(reservaInbound, qtdNF)
+                  const qtdSubir = Math.max(0, qtdNF - reserva)
+                  const novoTotal = produtoOlistSelecionado.estoque_saldo + qtdSubir
+                  return (
+                    <>
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-around', textAlign: 'center', flexWrap: 'wrap', gap: '1rem' }}>
+                        <div>
+                          <p style={{ color: '#666', fontSize: '0.8rem', fontWeight: '600', margin: 0 }}>ESTOQUE ATUAL OLIST</p>
+                          <p style={{ color: '#1a1a1a', fontSize: '1.5rem', fontWeight: '700', margin: 0 }}>
+                            {produtoOlistSelecionado.estoque_saldo}
+                          </p>
+                        </div>
+                        <div style={{ fontSize: '1.5rem', color: '#4caf50', fontWeight: '700' }}>+</div>
+                        <div>
+                          <p style={{ color: '#666', fontSize: '0.8rem', fontWeight: '600', margin: 0 }}>QTD A SUBIR</p>
+                          <p style={{ color: '#007acc', fontSize: '1.5rem', fontWeight: '700', margin: 0 }}>
+                            {qtdSubir}
+                          </p>
+                          {reserva > 0 && (
+                            <p style={{ color: '#999', fontSize: '0.7rem', margin: '0.15rem 0 0 0' }}>
+                              (de {qtdNF} recebidas)
+                            </p>
+                          )}
+                        </div>
+                        <div style={{ fontSize: '1.5rem', color: '#4caf50', fontWeight: '700' }}>=</div>
+                        <div>
+                          <p style={{ color: '#666', fontSize: '0.8rem', fontWeight: '600', margin: 0 }}>NOVO ESTOQUE TOTAL</p>
+                          <p style={{ color: '#2e7d32', fontSize: '1.8rem', fontWeight: '800', margin: 0 }}>
+                            {novoTotal}
+                          </p>
+                        </div>
+                      </div>
+                      {reserva > 0 && (
+                        <div style={{ marginTop: '1rem', padding: '0.75rem 1rem', background: '#fff3e0', border: '1px solid #ffb74d', borderRadius: '6px', color: '#e65100', fontSize: '0.88rem' }}>
+                          ⚠️ <strong>{reserva} un</strong> deste produto estão separadas para o FULL no inbound {reservaInboundInbs} e serão <strong>seguradas</strong> (baixa automática no inbound). Por isso sobe só {qtdSubir} na Olist.
+                        </div>
+                      )}
+                    </>
+                  )
+                })()}
               </div>
             )}
 

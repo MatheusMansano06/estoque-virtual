@@ -997,6 +997,116 @@ async def aceitar_sugestao_vinculo(request: Request):
         db.close()
 
 
+def _calcular_reserva_inbound(db, olist_produto_id, olist_sku, disponivel=None,
+                              aplicar=False, agora=None):
+    """
+    REGRA DO INBOUND: verifica inbounds ATIVOS (não encerrados) que contêm
+    este produto e ainda NÃO deram baixa, e calcula quanto da entrada deve
+    ser "segurado" para o FULL (em vez de subir tudo pra Olist).
+
+    - Casa por olist_produto_id (preferência) ou por SKU do inbound.
+    - Ignora itens que JÁ deram baixa (baixa_aplicada=1) -> não desconta 2x.
+    - Considera o que já foi segurado antes (quantidade_baixada) em entradas
+      anteriores do mesmo produto (segura parcial e completa nas próximas).
+    - 'disponivel': se informado, limita o total segurado à qtd que chegou
+      (NF pequena não segura mais do que tem). Se None = reserva teórica total.
+
+    Se aplicar=True: marca os itens do inbound (quantidade_baixada cresce;
+    baixa_aplicada=1 só quando cobre todo o FULL). NÃO commita.
+
+    Retorna (reserva_total, detalhes[]).
+    """
+    reserva_total = 0.0
+    detalhes = []
+
+    pid = str(olist_produto_id) if olist_produto_id else None
+    sku = (olist_sku or "").strip().lower()
+    if not pid and not sku:
+        return 0.0, []
+
+    restante = float(disponivel) if disponivel is not None else None
+
+    ativos = db.query(EmbaleFU).filter(EmbaleFU.status != "encerrado").all()
+    for emb in ativos:
+        for it in emb.itens:
+            if restante is not None and restante <= 0:
+                break
+            if it.baixa_aplicada == 1:
+                continue  # já deu baixa -> não aplica a regra
+
+            casa = False
+            if pid and it.olist_produto_id and str(it.olist_produto_id) == pid:
+                casa = True
+            elif sku and it.sku_inbound and it.sku_inbound.strip().lower() == sku:
+                casa = True
+            if not casa:
+                continue
+
+            ja_segurado = it.quantidade_baixada or 0
+            falta_segurar = (it.quantidade_separada or 0) - ja_segurado
+            if falta_segurar <= 0:
+                continue
+
+            if restante is not None:
+                segurar = min(restante, falta_segurar)
+            else:
+                segurar = falta_segurar
+            if segurar <= 0:
+                continue
+
+            reserva_total += segurar
+            completo = (ja_segurado + segurar) >= (it.quantidade_separada or 0)
+            detalhes.append({
+                "inbound_id": emb.id,
+                "numero_inbound": emb.numero_inbound,
+                "nome_inbound": emb.nome_embalde,
+                "item_id": it.id,
+                "titulo": it.titulo_anuncio,
+                "sku": it.sku_inbound,
+                "segurar": segurar,
+                "full_total": it.quantidade_separada,
+                "completo": completo,
+            })
+
+            if aplicar:
+                it.quantidade_baixada = ja_segurado + segurar
+                it.data_baixa = agora or datetime.utcnow()
+                if completo:
+                    it.baixa_aplicada = 1
+                if pid and not it.olist_produto_id:
+                    it.olist_produto_id = pid
+                if olist_sku and not it.olist_sku:
+                    it.olist_sku = olist_sku
+                db.add(it)
+
+            if restante is not None:
+                restante -= segurar
+
+    return reserva_total, detalhes
+
+
+async def reserva_inbound_produto(request: Request):
+    """
+    GET /api/embaldes/reserva-produto?olist_produto_id=X&olist_sku=Y
+    Read-only: retorna quanto deste produto está reservado para inbounds
+    ATIVOS (pra avisar o usuário ANTES de subir estoque). Não altera nada.
+    """
+    db = SessionLocal()
+    try:
+        pid = request.query_params.get("olist_produto_id", "")
+        sku = request.query_params.get("olist_sku", "")
+        reserva, detalhes = _calcular_reserva_inbound(db, pid, sku, aplicar=False)
+        return JSONResponse({
+            "reservado_full": reserva,
+            "tem_reserva": reserva > 0,
+            "detalhes": detalhes,
+        })
+    except Exception as e:
+        return JSONResponse({"erro": str(e)}, status_code=500)
+    finally:
+        db.close()
+
+
 async def atualizar_estoque_olist(request: Request):
     """Atualiza estoque do produto na Olist (entrada de mercadoria da NF)"""
     db = SessionLocal()
@@ -1016,17 +1126,33 @@ async def atualizar_estoque_olist(request: Request):
                 "error": "Produto não está vinculado à Olist"
             }, status_code=400)
 
-        # Chamar API para atualizar estoque (entrada da NF) - UMA unica vez com a qtd total
-        sucesso = olist.atualizar_estoque(
-            item.olist_produto_id,
-            quantidade=float(quantidade),
-            tipo=tipo,
-            preco_unitario=float(item.preco_unitario or 0)
-        )
+        agora = datetime.utcnow()
+
+        # ===== REGRA DO INBOUND =====
+        # Só se aplica em ENTRADA (tipo 'E'). Segura a qtd destinada ao FULL
+        # de inbounds ativos que ainda não deram baixa, e sobe só o restante.
+        reserva_full = 0.0
+        reserva_detalhes = []
+        if tipo == "E":
+            reserva_full, reserva_detalhes = _calcular_reserva_inbound(
+                db, item.olist_produto_id, item.olist_sku,
+                disponivel=float(quantidade), aplicar=True, agora=agora
+            )
+
+        quantidade_subir = max(0.0, float(quantidade) - reserva_full)
+
+        # Sobe na Olist só o que sobrou (se sobrou). Se segurou tudo, não
+        # precisa chamar a Olist (nada de organico entra).
+        sucesso = True
+        if quantidade_subir > 0:
+            sucesso = olist.atualizar_estoque(
+                item.olist_produto_id,
+                quantidade=quantidade_subir,
+                tipo=tipo,
+                preco_unitario=float(item.preco_unitario or 0)
+            )
 
         if sucesso:
-            agora = datetime.utcnow()
-
             # Determina TODOS os itens que participaram desta entrada.
             # Em massa, o frontend manda item_ids (todos os registros do grupo).
             if isinstance(item_ids, list) and item_ids:
@@ -1035,7 +1161,6 @@ async def atualizar_estoque_olist(request: Request):
                 ids_marcar = [item_id]
 
             # Vincula todos ao mesmo anuncio Olist e marca todos como subidos.
-            # (sem isso, so o 1o registro ficava "Subido na Olist" numa subida em massa)
             itens_grupo = db.query(ItemEstoque).filter(ItemEstoque.id.in_(ids_marcar)).all()
             for it in itens_grupo:
                 it.olist_produto_id = item.olist_produto_id
@@ -1043,15 +1168,27 @@ async def atualizar_estoque_olist(request: Request):
                 it.olist_nome = item.olist_nome
                 it.estoque_olist_atualizado_em = agora
 
-            db.commit()
+            db.commit()  # persiste tb as baixas dos inbounds (reserva)
+
+            if reserva_full > 0:
+                inbs = ", ".join(f"#{d['numero_inbound']}" for d in reserva_detalhes)
+                msg = (f"Entrada de {int(float(quantidade))} un: subi {int(quantidade_subir)} "
+                       f"na Olist e segurei {int(reserva_full)} pro FULL (inbound {inbs}).")
+            else:
+                msg = f"Entrada de {int(quantidade_subir)} unidades registrada na Olist"
 
             return JSONResponse({
                 "sucesso": True,
-                "mensagem": f"Entrada de {quantidade} unidades registrada na Olist",
+                "mensagem": msg,
                 "olist_produto_id": item.olist_produto_id,
+                "quantidade_recebida": float(quantidade),
+                "quantidade_subida": quantidade_subir,
+                "reservado_full": reserva_full,
+                "reserva_detalhes": reserva_detalhes,
                 "itens_marcados": len(itens_grupo)
             })
         else:
+            db.rollback()  # desfaz tb as reservas do inbound
             return JSONResponse({
                 "error": "Falha ao atualizar estoque na Olist"
             }, status_code=500)
@@ -2144,6 +2281,7 @@ routes = [
     Route("/api/olist/vincular-produto", vincular_produto_olist, methods=["POST"]),
     Route("/api/olist/aceitar-sugestao", aceitar_sugestao_vinculo, methods=["POST"]),
     Route("/api/olist/atualizar-estoque", atualizar_estoque_olist, methods=["POST"]),
+    Route("/api/embaldes/reserva-produto", reserva_inbound_produto, methods=["GET"]),
     Route("/api/olist/adicionar-manual", adicionar_produto_olist_manual, methods=["POST"]),
     # Memória de vínculos (de-para fornecedor -> Olist)
     Route("/api/olist/sugestao-vinculo", olist_sugestao_vinculo, methods=["GET"]),
