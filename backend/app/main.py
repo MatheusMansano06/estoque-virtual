@@ -1722,12 +1722,25 @@ async def revisar_baixa_embale(request: Request):
 
         itens = list(embale.itens)
 
-        # 1) Resolver produto Olist de cada item (usa cache, rápido)
+        # 1) Resolver produto Olist de cada item.
+        #    Persiste o vínculo encontrado no banco para acelerar as próximas
+        #    revisões (não precisa buscar de novo) e reduzir chamadas à API.
         resolvidos = {}  # item_id -> (produto_id, nome)
+        houve_novo_vinculo = False
         for item in itens:
-            resolvidos[item.id] = _resolver_olist_para_item(item)
+            pid, nome = _resolver_olist_para_item(item)
+            resolvidos[item.id] = (pid, nome)
+            # Salva o vínculo se for novo (ainda não tinha olist_produto_id)
+            if pid and not item.olist_produto_id:
+                item.olist_produto_id = pid
+                item.olist_nome = nome
+                db.add(item)
+                houve_novo_vinculo = True
+        if houve_novo_vinculo:
+            db.commit()
 
-        # 2) Buscar saldo na Olist em paralelo (só dos que acharam produto)
+        # 2) Buscar saldo na Olist (throttled internamente p/ respeitar 120/min).
+        #    Workers baixos: o gargalo real é o rate limit, não a CPU.
         def _get_estoque(produto_id):
             try:
                 return produto_id, olist.obter_estoque(produto_id)
@@ -1737,7 +1750,7 @@ async def revisar_baixa_embale(request: Request):
         ids_para_estoque = {pid for (pid, _) in resolvidos.values() if pid}
         estoques = {}  # produto_id -> saldo (int) ou None
         if ids_para_estoque:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=8) as ex:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=4) as ex:
                 for produto_id, dados in ex.map(_get_estoque, ids_para_estoque):
                     estoques[produto_id] = (dados or {}).get("saldo") if dados else None
 
@@ -1830,16 +1843,69 @@ async def revisar_baixa_embale(request: Request):
         db.close()
 
 
+def _aplicar_baixa_item(db, item, embale, qtd_override=None):
+    """
+    Aplica a baixa de UM item na Olist (tipo='S' = Saída).
+    Retorna dict com status: ok | ja_baixado | zerado | nao_encontrado | falha.
+    Não faz commit (quem chama decide quando commitar).
+    """
+    if item.baixa_aplicada == 1:
+        return {
+            "item_id": item.id, "status": "ja_baixado",
+            "mensagem": "Já foi baixado anteriormente",
+            "quantidade_baixada": item.quantidade_baixada
+        }
+
+    produto_id, nome_olist = _resolver_olist_para_item(item)
+    if not produto_id:
+        return {
+            "item_id": item.id, "status": "nao_encontrado",
+            "erro": "Produto não encontrado na Olist"
+        }
+
+    # Quantidade: override declarado, senão a do FULL
+    if qtd_override is not None:
+        qtd_baixar = float(qtd_override)
+    else:
+        qtd_baixar = item.quantidade_separada or 0
+
+    if qtd_baixar <= 0:
+        return {
+            "item_id": item.id, "status": "zerado",
+            "mensagem": "Quantidade a baixar é zero"
+        }
+
+    sucesso = olist.atualizar_estoque(
+        produto_id=produto_id,
+        quantidade=qtd_baixar,
+        tipo="S",  # Saída
+        observacao=f"Baixa do Inbound #{embale.numero_inbound} (FULL)"
+    )
+
+    if sucesso:
+        item.quantidade_baixada = qtd_baixar
+        item.baixa_aplicada = 1
+        item.data_baixa = datetime.utcnow()
+        db.add(item)
+        return {
+            "item_id": item.id, "status": "ok",
+            "quantidade_baixada": qtd_baixar,
+            "mensagem": f"Baixa de {int(qtd_baixar)} un. aplicada com sucesso"
+        }
+    return {
+        "item_id": item.id, "status": "falha",
+        "erro": "Falha ao aplicar baixa na Olist"
+    }
+
+
 async def confirmar_baixa_embale(request: Request):
     """
     POST /api/embaldes/{embale_id}/confirmar-baixa
-    Confirma e aplica a baixa de estoque na Olist para cada produto.
+    Confirma e aplica a baixa de estoque na Olist para cada produto (EM MASSA).
 
     Body: {
-      "itens": {
-        "item_id": quantidade_a_baixar,  // Para itens com falta, declara a qtd
-        ...
-      }
+      "itens": {"item_id": quantidade_a_baixar, ...},  // declaração p/ itens com falta
+      "somente_ids": [item_id, ...]  // opcional: baixar só estes itens
     }
     """
     db = SessionLocal()
@@ -1847,6 +1913,7 @@ async def confirmar_baixa_embale(request: Request):
         embale_id = int(request.path_params.get("embale_id"))
         body = await request.json()
         itens_declarados = body.get("itens", {})
+        somente_ids = body.get("somente_ids")  # None = todos
 
         embale = db.query(EmbaleFU).filter(EmbaleFU.id == embale_id).first()
         if not embale:
@@ -1856,74 +1923,24 @@ async def confirmar_baixa_embale(request: Request):
             return JSONResponse({"erro": "Inbound já está encerrado"}, status_code=400)
 
         itens = list(embale.itens)
+        if somente_ids:
+            ids_set = {int(i) for i in somente_ids}
+            itens = [i for i in itens if i.id in ids_set]
+
         resultados = []
         erros = []
 
         for item in itens:
-            # Pula itens já baixados
-            if item.baixa_aplicada == 1:
-                resultados.append({
-                    "item_id": item.id,
-                    "status": "ja_baixado",
-                    "mensagem": "Já foi baixado anteriormente"
-                })
-                continue
-
-            # Resolver produto Olist
-            produto_id, nome_olist = _resolver_olist_para_item(item)
-            if not produto_id:
-                erros.append({
-                    "item_id": item.id,
-                    "erro": "Produto não encontrado na Olist"
-                })
-                continue
-
-            # Determinar quantidade a baixar
-            item_id_str = str(item.id)
-            if item_id_str in itens_declarados:
-                # Usuário declarou uma quantidade (para itens com falta)
-                qtd_baixar = float(itens_declarados[item_id_str])
+            qtd_override = itens_declarados.get(str(item.id))
+            r = _aplicar_baixa_item(db, item, embale, qtd_override=qtd_override)
+            if r["status"] in ("nao_encontrado", "falha"):
+                erros.append(r)
             else:
-                # Usar a quantidade do FULL (nenhuma falta)
-                qtd_baixar = item.quantidade_separada or 0
-
-            if qtd_baixar <= 0:
-                resultados.append({
-                    "item_id": item.id,
-                    "status": "zerado",
-                    "mensagem": "Quantidade a baixar é zero"
-                })
-                continue
-
-            # Aplicar a baixa na Olist (tipo='S' = Saída)
-            sucesso = olist.atualizar_estoque(
-                produto_id=produto_id,
-                quantidade=qtd_baixar,
-                tipo="S",  # Saída
-                observacao=f"Baixa do Inbound #{embale.numero_inbound} (FULL)"
-            )
-
-            if sucesso:
-                # Registrar a baixa aplicada
-                item.quantidade_baixada = qtd_baixar
-                item.baixa_aplicada = 1
-                item.data_baixa = datetime.utcnow()
-                db.add(item)
-                resultados.append({
-                    "item_id": item.id,
-                    "status": "ok",
-                    "quantidade_baixada": qtd_baixar,
-                    "mensagem": f"Baixa de {qtd_baixar} un. aplicada com sucesso"
-                })
-            else:
-                erros.append({
-                    "item_id": item.id,
-                    "erro": f"Falha ao aplicar baixa na Olist"
-                })
+                resultados.append(r)
 
         db.commit()
 
-        resumo_sucesso = sum(1 for r in resultados if r.get("status") in ["ok", "ja_baixado"])
+        resumo_sucesso = sum(1 for r in resultados if r.get("status") in ("ok", "ja_baixado"))
         return JSONResponse({
             "embale_id": embale.id,
             "total_itens": len(itens),
@@ -1933,6 +1950,46 @@ async def confirmar_baixa_embale(request: Request):
             "erros": erros,
             "mensagem": f"{resumo_sucesso}/{len(itens)} itens processados com sucesso"
         })
+
+    except Exception as e:
+        db.rollback()
+        return JSONResponse({"erro": str(e)}, status_code=500)
+    finally:
+        db.close()
+
+
+async def baixa_item_individual(request: Request):
+    """
+    POST /api/embaldes/{embale_id}/itens/{item_id}/baixa
+    Aplica a baixa de UM único item na Olist (produto por produto).
+    Body opcional: {"quantidade": N}  (default = quantidade do FULL)
+    """
+    db = SessionLocal()
+    try:
+        embale_id = int(request.path_params.get("embale_id"))
+        item_id = int(request.path_params.get("item_id"))
+
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        qtd = body.get("quantidade")
+
+        embale = db.query(EmbaleFU).filter(EmbaleFU.id == embale_id).first()
+        if not embale:
+            return JSONResponse({"erro": "Inbound não encontrado"}, status_code=404)
+        if embale.status == "encerrado":
+            return JSONResponse({"erro": "Inbound já está encerrado"}, status_code=400)
+
+        item = next((i for i in embale.itens if i.id == item_id), None)
+        if not item:
+            return JSONResponse({"erro": "Item não encontrado neste inbound"}, status_code=404)
+
+        r = _aplicar_baixa_item(db, item, embale, qtd_override=qtd)
+        db.commit()
+
+        status_code = 200 if r["status"] in ("ok", "ja_baixado", "zerado") else 400
+        return JSONResponse(r, status_code=status_code)
 
     except Exception as e:
         db.rollback()
@@ -2018,6 +2075,7 @@ routes = [
     Route("/api/embaldes/{embale_id}/data-limite", atualizar_data_limite_embale, methods=["POST"]),
     Route("/api/embaldes/{embale_id}/revisao", revisar_baixa_embale, methods=["GET"]),
     Route("/api/embaldes/{embale_id}/confirmar-baixa", confirmar_baixa_embale, methods=["POST"]),
+    Route("/api/embaldes/{embale_id}/itens/{item_id}/baixa", baixa_item_individual, methods=["POST"]),
     Route("/api/embaldes/{embale_id}/encerrar", encerrar_embale, methods=["POST"]),
 ]
 

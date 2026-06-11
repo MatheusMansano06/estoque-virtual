@@ -74,6 +74,8 @@ export function EmbaldesManager() {
   const [carregandoRevisao, setCarregandoRevisao] = useState(false)
   const [declaracoes, setDeclaracoes] = useState<Record<number, number>>({})
   const [confirmandoBaixa, setConfirmandoBaixa] = useState(false)
+  const [baixandoItemId, setBaixandoItemId] = useState<number | null>(null)
+  const [itensBaixados, setItensBaixados] = useState<Record<number, number>>({})
 
   useEffect(() => {
     carregarInbounds()
@@ -181,8 +183,15 @@ export function EmbaldesManager() {
       setRevisandoId(id)
       setRevisao(null)
       setDeclaracoes({})
+      setItensBaixados({})
       const resposta = await api.get(`/embaldes/${id}/revisao`)
       setRevisao(resposta.data)
+      // Marca os que já foram baixados antes
+      const jaBaixados: Record<number, number> = {}
+      for (const it of resposta.data.itens || []) {
+        if (it.baixa_aplicada === 1) jaBaixados[it.item_id] = 1
+      }
+      setItensBaixados(jaBaixados)
     } catch (erro: any) {
       setMessage('Erro ao revisar: ' + (erro.response?.data?.erro || String(erro)))
       setRevisandoId(null)
@@ -193,18 +202,48 @@ export function EmbaldesManager() {
 
   const confirmarBaixa = async () => {
     if (!revisao) return
+    if (!confirm('Confirmar a baixa EM MASSA na Olist? Isso escreve no estoque real e não há volta.')) return
     try {
       setConfirmandoBaixa(true)
       const resposta = await api.post(`/embaldes/${revisao.embale_id}/confirmar-baixa`, {
         itens: declaracoes
       })
       setMessage(`Sucesso! ${resposta.data.mensagem}`)
-      // Recarrega a revisão
-      await carregarRevisao(revisao.embale_id)
+      // Marca os itens baixados localmente
+      const novos: Record<number, number> = { ...itensBaixados }
+      for (const r of resposta.data.resultados || []) {
+        if (r.status === 'ok' || r.status === 'ja_baixado') novos[r.item_id] = r.quantidade_baixada || 0
+      }
+      setItensBaixados(novos)
     } catch (erro: any) {
       setMessage('Erro ao confirmar: ' + (erro.response?.data?.erro || String(erro)))
     } finally {
       setConfirmandoBaixa(false)
+    }
+  }
+
+  const baixarItem = async (it: ItemRevisao) => {
+    if (!revisao) return
+    const qtd = it.tem_falta
+      ? (declaracoes[it.item_id] ?? Math.round(it.estoque_atual || 0))
+      : Math.round(it.quantidade_full)
+    if (!confirm(`Baixar ${qtd} un. de "${it.titulo_anuncio}" na Olist? Não há volta.`)) return
+    try {
+      setBaixandoItemId(it.item_id)
+      const resposta = await api.post(`/embaldes/${revisao.embale_id}/itens/${it.item_id}/baixa`, {
+        quantidade: qtd
+      })
+      const r = resposta.data
+      if (r.status === 'ok' || r.status === 'ja_baixado') {
+        setItensBaixados({ ...itensBaixados, [it.item_id]: r.quantidade_baixada || qtd })
+        setMessage(r.mensagem || 'Baixa aplicada')
+      } else {
+        setMessage(r.mensagem || r.erro || 'Não foi possível baixar')
+      }
+    } catch (erro: any) {
+      setMessage('Erro: ' + (erro.response?.data?.erro || String(erro)))
+    } finally {
+      setBaixandoItemId(null)
     }
   }
 
@@ -499,23 +538,26 @@ export function EmbaldesManager() {
                       </div>
 
                       {/* Tabela */}
-                      <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr 1fr 1.2fr 1fr', gap: '0.5rem', padding: '0.6rem 0.8rem', background: '#f5f5f5', borderRadius: '4px 4px 0 0', fontSize: '0.75rem', fontWeight: 'bold', color: '#666', textTransform: 'uppercase' }}>
+                      <div style={{ display: 'grid', gridTemplateColumns: '2fr 0.9fr 0.9fr 0.9fr 1.1fr 0.8fr 1fr', gap: '0.5rem', padding: '0.6rem 0.8rem', background: '#f5f5f5', borderRadius: '4px 4px 0 0', fontSize: '0.75rem', fontWeight: 'bold', color: '#666', textTransform: 'uppercase' }}>
                         <div>Produto / SKU</div>
                         <div style={{ textAlign: 'center' }}>Estoque Olist</div>
                         <div style={{ textAlign: 'center' }}>Vai pro FULL</div>
                         <div style={{ textAlign: 'center' }}>Resultado</div>
                         <div style={{ textAlign: 'center' }}>Situação</div>
                         <div style={{ textAlign: 'center' }}>Declarar</div>
+                        <div style={{ textAlign: 'center' }}>Ação</div>
                       </div>
                       <div style={{ maxHeight: '500px', overflowY: 'auto', border: '1px solid #eee', borderTop: 'none' }}>
                         {revisao.itens.map((it) => {
                           const naoAchado = !it.olist_encontrado
                           const semEstoque = it.olist_encontrado && it.estoque_indisponivel
                           const bg = naoAchado ? '#fff8f0' : it.tem_falta ? '#ffebee' : '#fff'
+                          const jaBaixado = !!itensBaixados[it.item_id]
+                          const podeBaixar = it.olist_encontrado && !semEstoque && !jaBaixado
                           return (
                             <div
                               key={it.item_id}
-                              style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr 1fr 1.2fr 1fr', gap: '0.5rem', padding: '0.7rem 0.8rem', background: bg, borderBottom: '1px solid #f0f0f0', fontSize: '0.85rem', alignItems: 'center' }}
+                              style={{ display: 'grid', gridTemplateColumns: '2fr 0.9fr 0.9fr 0.9fr 1.1fr 0.8fr 1fr', gap: '0.5rem', padding: '0.7rem 0.8rem', background: jaBaixado ? '#eef7ee' : bg, borderBottom: '1px solid #f0f0f0', fontSize: '0.85rem', alignItems: 'center', opacity: jaBaixado ? 0.75 : 1 }}
                             >
                               <div>
                                 <div style={{ fontWeight: 600 }}>{it.titulo_anuncio}</div>
@@ -540,7 +582,7 @@ export function EmbaldesManager() {
                                 )}
                               </div>
                               <div style={{ textAlign: 'center' }}>
-                                {it.tem_falta ? (
+                                {it.tem_falta && !jaBaixado ? (
                                   <input
                                     type="number"
                                     min="0"
@@ -553,22 +595,37 @@ export function EmbaldesManager() {
                                   <span style={{ color: '#999', fontSize: '0.8rem' }}>—</span>
                                 )}
                               </div>
+                              <div style={{ textAlign: 'center' }}>
+                                {jaBaixado ? (
+                                  <span style={{ color: '#2e7d32', fontWeight: 'bold', fontSize: '0.8rem' }}>✓ Baixado</span>
+                                ) : podeBaixar ? (
+                                  <button
+                                    onClick={() => baixarItem(it)}
+                                    disabled={baixandoItemId === it.item_id}
+                                    style={{ padding: '0.3rem 0.7rem', background: '#fff', color: '#1976D2', border: '1px solid #1976D2', borderRadius: '4px', cursor: baixandoItemId === it.item_id ? 'wait' : 'pointer', fontSize: '0.8rem', fontWeight: 'bold' }}
+                                  >
+                                    {baixandoItemId === it.item_id ? '...' : 'Baixar'}
+                                  </button>
+                                ) : (
+                                  <span style={{ color: '#ccc', fontSize: '0.8rem' }}>—</span>
+                                )}
+                              </div>
                             </div>
                           )
                         })}
                       </div>
 
-                      {/* Botão Confirmar Baixa */}
-                      <div style={{ marginTop: '1rem', display: 'flex', gap: '0.5rem' }}>
+                      {/* Botão Confirmar Baixa em massa */}
+                      <div style={{ marginTop: '1rem', display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
                         <button
                           onClick={confirmarBaixa}
                           disabled={confirmandoBaixa}
                           style={{ padding: '0.6rem 1.2rem', background: '#1976D2', color: '#fff', border: 'none', borderRadius: '4px', cursor: confirmandoBaixa ? 'not-allowed' : 'pointer', fontWeight: 'bold', opacity: confirmandoBaixa ? 0.7 : 1 }}
                         >
-                          {confirmandoBaixa ? 'Processando...' : 'Confirmar Baixa na Olist'}
+                          {confirmandoBaixa ? 'Processando...' : 'Baixar TODOS pendentes na Olist'}
                         </button>
-                        <span style={{ fontSize: '0.75rem', color: '#666', alignSelf: 'center', fontStyle: 'italic' }}>
-                          Isso escreverá na Olist — não há volta!
+                        <span style={{ fontSize: '0.75rem', color: '#666', fontStyle: 'italic' }}>
+                          Baixa em massa. Ou use "Baixar" linha por linha. Não há volta!
                         </span>
                       </div>
                     </div>

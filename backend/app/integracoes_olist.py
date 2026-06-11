@@ -13,6 +13,8 @@ Fluxo:
 import os
 import json
 import base64
+import time
+import threading
 import urllib.request
 import urllib.parse
 from datetime import datetime, timedelta
@@ -52,6 +54,25 @@ class OlistIntegration:
         self._cache_produtos: Optional[List[Dict]] = None
         self._cache_timestamp: Optional[datetime] = None
         self._cache_ttl_segundos = 1800  # 30 minutos
+
+        # Cache de estoque (produto_id -> (dados, timestamp_epoch))
+        self._estoque_cache: Dict[str, tuple] = {}
+        self._estoque_cache_ttl = 300  # 5 minutos
+
+        # Rate limiter: Olist permite 120 req/min. Usamos margem de seguranca.
+        # Garante intervalo minimo entre requisicoes (thread-safe).
+        self._rate_lock = threading.Lock()
+        self._ultima_req = 0.0
+        self._intervalo_min = 60.0 / 100.0  # ~100 req/min (margem sob 120)
+
+    def _throttle(self):
+        """Garante o intervalo minimo entre requisicoes (rate limit global)."""
+        with self._rate_lock:
+            agora = time.monotonic()
+            espera = self._intervalo_min - (agora - self._ultima_req)
+            if espera > 0:
+                time.sleep(espera)
+            self._ultima_req = time.monotonic()
 
     # ========== PERSISTENCIA DE TOKEN ==========
 
@@ -406,6 +427,7 @@ class OlistIntegration:
             return []
         try:
             url = f"{self.API_BASE}/produtos?codigo={urllib.parse.quote(codigo)}&limit=20"
+            self._throttle()  # respeita o rate limit (120/min)
             req = urllib.request.Request(
                 url, headers={"Accept": "application/json", "Authorization": f"Bearer {token}"}
             )
@@ -588,8 +610,20 @@ class OlistIntegration:
             "componentes": componentes
         }
 
-    def obter_estoque(self, produto_id: str) -> Optional[Dict]:
-        """Obtem o estoque atual de um produto (saldo, reservado, disponivel)"""
+    def obter_estoque(self, produto_id: str, usar_cache: bool = True,
+                      max_retries: int = 3) -> Optional[Dict]:
+        """
+        Obtem o estoque atual de um produto (saldo, reservado, disponivel).
+        - Usa cache de 5 min (usar_cache=True) para evitar repetir requisicoes.
+        - Aplica throttle (rate limit 120/min da Olist).
+        - Em caso de HTTP 429, espera o tempo indicado e tenta de novo.
+        """
+        # 1) Cache
+        if usar_cache:
+            cached = self._estoque_cache.get(str(produto_id))
+            if cached and (time.time() - cached[1]) < self._estoque_cache_ttl:
+                return cached[0]
+
         token = self.get_access_token()
         if not token:
             # Fallback para token simples (legado v2)
@@ -597,21 +631,41 @@ class OlistIntegration:
             if not token:
                 return None
 
-        try:
-            url = f"{self.API_BASE}/estoque/{produto_id}"
-            headers = {"Accept": "application/json", "Authorization": f"Bearer {token}"}
-            req = urllib.request.Request(url, headers=headers, method="GET")
+        url = f"{self.API_BASE}/estoque/{produto_id}"
+        headers = {"Accept": "application/json", "Authorization": f"Bearer {token}"}
 
-            with urllib.request.urlopen(req, timeout=15) as response:
-                dados = json.loads(response.read().decode("utf-8"))
-                return {
-                    "saldo": int(dados.get("saldo", 0) or 0),
-                    "reservado": int(dados.get("reservado", 0) or 0),
-                    "disponivel": int(dados.get("disponivel", 0) or 0),
-                }
-        except Exception as e:
-            print(f"[OLIST] Erro ao obter estoque de {produto_id}: {e}")
-            return None
+        for tentativa in range(max_retries):
+            self._throttle()  # respeita o rate limit antes de cada requisicao
+            try:
+                req = urllib.request.Request(url, headers=headers, method="GET")
+                with urllib.request.urlopen(req, timeout=15) as response:
+                    dados = json.loads(response.read().decode("utf-8"))
+                    resultado = {
+                        "saldo": int(dados.get("saldo", 0) or 0),
+                        "reservado": int(dados.get("reservado", 0) or 0),
+                        "disponivel": int(dados.get("disponivel", 0) or 0),
+                    }
+                    self._estoque_cache[str(produto_id)] = (resultado, time.time())
+                    return resultado
+            except urllib.error.HTTPError as e:
+                if e.code == 429 and tentativa < max_retries - 1:
+                    # Rate limit: espera o tempo indicado (ou um default crescente)
+                    reset = e.headers.get("x-ratelimit-reset") or e.headers.get("Retry-After")
+                    try:
+                        espera = float(reset)
+                    except (TypeError, ValueError):
+                        espera = 2.0 * (tentativa + 1)
+                    espera = min(espera, 15.0)  # nunca espera mais que 15s
+                    print(f"[OLIST] 429 em {produto_id}, aguardando {espera:.1f}s (tentativa {tentativa+1})")
+                    time.sleep(espera)
+                    continue
+                print(f"[OLIST] Erro HTTP {e.code} ao obter estoque de {produto_id}")
+                return None
+            except Exception as e:
+                print(f"[OLIST] Erro ao obter estoque de {produto_id}: {e}")
+                return None
+
+        return None
 
     def _buscar_por_campo(self, token: str, campo: str, termo: str) -> List[Dict]:
         """Busca produtos por um campo especifico"""
@@ -689,32 +743,46 @@ class OlistIntegration:
             if not token:
                 return False
 
-        try:
-            url = f"{self.API_BASE}/estoque/{produto_id}"
-            data = {
-                "tipo": tipo,
-                "quantidade": float(quantidade),
-                "precoUnitario": float(preco_unitario),
-                "observacoes": observacao
-            }
-            post_data = json.dumps(data).encode("utf-8")
-            headers = {
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {token}"
-            }
-            req = urllib.request.Request(url, data=post_data, headers=headers, method="POST")
+        url = f"{self.API_BASE}/estoque/{produto_id}"
+        data = {
+            "tipo": tipo,
+            "quantidade": float(quantidade),
+            "precoUnitario": float(preco_unitario),
+            "observacoes": observacao
+        }
+        post_data = json.dumps(data).encode("utf-8")
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {token}"
+        }
 
-            with urllib.request.urlopen(req, timeout=15) as response:
-                print(f"[OLIST] Estoque ({tipo}) atualizado: produto {produto_id} qtd {quantidade}")
-                return True
+        for tentativa in range(3):
+            self._throttle()  # respeita o rate limit
+            try:
+                req = urllib.request.Request(url, data=post_data, headers=headers, method="POST")
+                with urllib.request.urlopen(req, timeout=15) as response:
+                    print(f"[OLIST] Estoque ({tipo}) atualizado: produto {produto_id} qtd {quantidade}")
+                    # Invalida o cache de estoque deste produto (mudou)
+                    self._estoque_cache.pop(str(produto_id), None)
+                    return True
+            except urllib.error.HTTPError as e:
+                if e.code == 429 and tentativa < 2:
+                    reset = e.headers.get("x-ratelimit-reset") or e.headers.get("Retry-After")
+                    try:
+                        espera = min(float(reset), 15.0)
+                    except (TypeError, ValueError):
+                        espera = 2.0 * (tentativa + 1)
+                    print(f"[OLIST] 429 ao baixar {produto_id}, aguardando {espera:.1f}s")
+                    time.sleep(espera)
+                    continue
+                error_body = e.read().decode("utf-8")
+                print(f"[OLIST] Erro HTTP {e.code} ao atualizar estoque: {error_body[:300]}")
+                return False
+            except Exception as e:
+                print(f"[OLIST] Erro ao atualizar estoque: {e}")
+                return False
 
-        except urllib.error.HTTPError as e:
-            error_body = e.read().decode("utf-8")
-            print(f"[OLIST] Erro HTTP {e.code} ao atualizar estoque: {error_body[:300]}")
-            return False
-        except Exception as e:
-            print(f"[OLIST] Erro ao atualizar estoque: {e}")
-            return False
+        return False
 
     def sincronizar_historico_vendas(self, db, dias: int = 30) -> int:
         """
