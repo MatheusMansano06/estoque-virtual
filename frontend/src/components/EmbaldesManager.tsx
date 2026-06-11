@@ -71,6 +71,8 @@ export function EmbaldesManager() {
   const [revisao, setRevisao] = useState<Revisao | null>(null)
   const [revisandoId, setRevisandoId] = useState<number | null>(null)
   const [carregandoRevisao, setCarregandoRevisao] = useState(false)
+  const [declaracoes, setDeclaracoes] = useState<Record<number, number>>({})
+  const [confirmandoBaixa, setConfirmandoBaixa] = useState(false)
 
   useEffect(() => {
     carregarInbounds()
@@ -169,12 +171,14 @@ export function EmbaldesManager() {
       // Toggle: fecha
       setRevisandoId(null)
       setRevisao(null)
+      setDeclaracoes({})
       return
     }
     try {
       setCarregandoRevisao(true)
       setRevisandoId(id)
       setRevisao(null)
+      setDeclaracoes({})
       const resposta = await api.get(`/embaldes/${id}/revisao`)
       setRevisao(resposta.data)
     } catch (erro: any) {
@@ -182,6 +186,23 @@ export function EmbaldesManager() {
       setRevisandoId(null)
     } finally {
       setCarregandoRevisao(false)
+    }
+  }
+
+  const confirmarBaixa = async () => {
+    if (!revisao) return
+    try {
+      setConfirmandoBaixa(true)
+      const resposta = await api.post(`/embaldes/${revisao.embale_id}/confirmar-baixa`, {
+        itens: declaracoes
+      })
+      setMessage(`Sucesso! ${resposta.data.mensagem}`)
+      // Recarrega a revisão
+      await carregarRevisao(revisao.embale_id)
+    } catch (erro: any) {
+      setMessage('Erro ao confirmar: ' + (erro.response?.data?.erro || String(erro)))
+    } finally {
+      setConfirmandoBaixa(false)
     }
   }
 
@@ -452,16 +473,17 @@ export function EmbaldesManager() {
                       </div>
 
                       <div style={{ fontSize: '0.8rem', color: '#666', marginBottom: '0.75rem', fontStyle: 'italic' }}>
-                        Revisão (somente leitura) — nada foi alterado na Olist ainda.
+                        Revisão (somente leitura) — selecione quantas unidades baixar em cada item.
                       </div>
 
                       {/* Tabela */}
-                      <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr 1fr 1fr', gap: '0.5rem', padding: '0.6rem 0.8rem', background: '#f5f5f5', borderRadius: '4px 4px 0 0', fontSize: '0.75rem', fontWeight: 'bold', color: '#666', textTransform: 'uppercase' }}>
+                      <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr 1fr 1.2fr 1fr', gap: '0.5rem', padding: '0.6rem 0.8rem', background: '#f5f5f5', borderRadius: '4px 4px 0 0', fontSize: '0.75rem', fontWeight: 'bold', color: '#666', textTransform: 'uppercase' }}>
                         <div>Produto / SKU</div>
                         <div style={{ textAlign: 'center' }}>Estoque Olist</div>
                         <div style={{ textAlign: 'center' }}>Vai pro FULL</div>
                         <div style={{ textAlign: 'center' }}>Resultado</div>
                         <div style={{ textAlign: 'center' }}>Situação</div>
+                        <div style={{ textAlign: 'center' }}>Declarar</div>
                       </div>
                       <div style={{ maxHeight: '500px', overflowY: 'auto', border: '1px solid #eee', borderTop: 'none' }}>
                         {revisao.itens.map((it) => {
@@ -471,7 +493,7 @@ export function EmbaldesManager() {
                           return (
                             <div
                               key={it.item_id}
-                              style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr 1fr 1fr', gap: '0.5rem', padding: '0.7rem 0.8rem', background: bg, borderBottom: '1px solid #f0f0f0', fontSize: '0.85rem', alignItems: 'center' }}
+                              style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr 1fr 1.2fr 1fr', gap: '0.5rem', padding: '0.7rem 0.8rem', background: bg, borderBottom: '1px solid #f0f0f0', fontSize: '0.85rem', alignItems: 'center' }}
                             >
                               <div>
                                 <div style={{ fontWeight: 600 }}>{it.titulo_anuncio}</div>
@@ -495,9 +517,37 @@ export function EmbaldesManager() {
                                   <span style={{ color: '#2e7d32', fontWeight: 'bold', fontSize: '0.8rem' }}>OK</span>
                                 )}
                               </div>
+                              <div style={{ textAlign: 'center' }}>
+                                {it.tem_falta ? (
+                                  <input
+                                    type="number"
+                                    min="0"
+                                    max={it.estoque_atual || 0}
+                                    value={declaracoes[it.item_id] ?? Math.round(it.estoque_atual || 0)}
+                                    onChange={(e) => setDeclaracoes({ ...declaracoes, [it.item_id]: parseFloat(e.target.value) || 0 })}
+                                    style={{ width: '60px', padding: '0.3rem', borderRadius: '3px', border: '1px solid #ddd', textAlign: 'center', fontSize: '0.85rem' }}
+                                  />
+                                ) : (
+                                  <span style={{ color: '#999', fontSize: '0.8rem' }}>—</span>
+                                )}
+                              </div>
                             </div>
                           )
                         })}
+                      </div>
+
+                      {/* Botão Confirmar Baixa */}
+                      <div style={{ marginTop: '1rem', display: 'flex', gap: '0.5rem' }}>
+                        <button
+                          onClick={confirmarBaixa}
+                          disabled={confirmandoBaixa}
+                          style={{ padding: '0.6rem 1.2rem', background: '#1976D2', color: '#fff', border: 'none', borderRadius: '4px', cursor: confirmandoBaixa ? 'not-allowed' : 'pointer', fontWeight: 'bold', opacity: confirmandoBaixa ? 0.7 : 1 }}
+                        >
+                          {confirmandoBaixa ? 'Processando...' : 'Confirmar Baixa na Olist'}
+                        </button>
+                        <span style={{ fontSize: '0.75rem', color: '#666', alignSelf: 'center', fontStyle: 'italic' }}>
+                          Isso escreverá na Olist — não há volta!
+                        </span>
                       </div>
                     </div>
                   ) : null}

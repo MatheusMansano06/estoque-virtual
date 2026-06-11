@@ -1535,6 +1535,15 @@ async def listar_embaldes(request: Request):
         total = query.count()
         embaldes = query.offset(skip).limit(limit).all()
 
+        def status_display(embale):
+            """Retorna status para exibição: 'encerrado', 'processando', ou 'valendo'"""
+            if embale.status == "encerrado":
+                return "encerrado"
+            # Se está processando mas não tem data limite, é "valendo" (sem deadline)
+            if not embale.data_limite:
+                return "valendo"
+            return "processando"
+
         return JSONResponse({
             "total": total,
             "skip": skip,
@@ -1549,7 +1558,7 @@ async def listar_embaldes(request: Request):
                     "data_upload": e.data_upload.isoformat(),
                     "data_limite": e.data_limite.isoformat() if e.data_limite else None,
                     "data_encerramento": e.data_encerramento.isoformat() if e.data_encerramento else None,
-                    "status": e.status,
+                    "status": status_display(e),
                     "qtd_items": len(e.itens),
                     "qtd_validados": sum(1 for i in e.itens if i.validado == 1)
                 }
@@ -1652,30 +1661,45 @@ def _resolver_olist_para_item(item):
     """
     Dado um ItemEmbaleFU, resolve o produto Olist correspondente.
     Retorna (produto_id, nome_olist) ou (None, None) se não encontrar.
-    1) Usa o vínculo já salvo (olist_produto_id), se houver.
-    2) Senão, busca na Olist pelo SKU (inclui variações via ?codigo=).
+    Ordem de prioridade:
+    1) Vínculo já salvo (olist_produto_id)
+    2) Busca por SKU do inbound (prioridade alta)
+    3) Busca por título do inbound (fallback)
     """
     if item.olist_produto_id:
         return item.olist_produto_id, (item.olist_nome or "")
 
+    # 1) Tenta SKU primeiro
     sku = (item.sku_inbound or "").strip()
-    if not sku:
-        return None, None
+    if sku:
+        try:
+            resultados = olist.buscar_produtos(sku, limite_resultados=15)
+            # Preferir match de SKU exato
+            for p in resultados:
+                if (p.get("sku") or "").strip().lower() == sku.lower():
+                    return str(p.get("id")), (p.get("nome") or "")
+            # Se achou algo por SKU (mesmo que não exato), usa
+            if resultados:
+                p = resultados[0]
+                return str(p.get("id")), (p.get("nome") or "")
+        except Exception:
+            pass
 
-    try:
-        resultados = olist.buscar_produtos(sku, limite_resultados=10)
-    except Exception:
-        return None, None
-
-    # Preferir match de SKU exato (case-insensitive)
-    for p in resultados:
-        if (p.get("sku") or "").strip().lower() == sku.lower():
-            return str(p.get("id")), (p.get("nome") or "")
-
-    # Senão, primeiro resultado
-    if resultados:
-        p = resultados[0]
-        return str(p.get("id")), (p.get("nome") or "")
+    # 2) Fallback: tenta título
+    titulo = (item.titulo_anuncio or "").strip()
+    if titulo:
+        try:
+            resultados = olist.buscar_produtos(titulo, limite_resultados=15)
+            # Tenta achar match por nome
+            for p in resultados:
+                if titulo.lower() in (p.get("nome") or "").lower():
+                    return str(p.get("id")), (p.get("nome") or "")
+            # Senão, primeiro resultado
+            if resultados:
+                p = resultados[0]
+                return str(p.get("id")), (p.get("nome") or "")
+        except Exception:
+            pass
 
     return None, None
 
@@ -1806,6 +1830,117 @@ async def revisar_baixa_embale(request: Request):
         db.close()
 
 
+async def confirmar_baixa_embale(request: Request):
+    """
+    POST /api/embaldes/{embale_id}/confirmar-baixa
+    Confirma e aplica a baixa de estoque na Olist para cada produto.
+
+    Body: {
+      "itens": {
+        "item_id": quantidade_a_baixar,  // Para itens com falta, declara a qtd
+        ...
+      }
+    }
+    """
+    db = SessionLocal()
+    try:
+        embale_id = int(request.path_params.get("embale_id"))
+        body = await request.json()
+        itens_declarados = body.get("itens", {})
+
+        embale = db.query(EmbaleFU).filter(EmbaleFU.id == embale_id).first()
+        if not embale:
+            return JSONResponse({"erro": "Inbound não encontrado"}, status_code=404)
+
+        if embale.status == "encerrado":
+            return JSONResponse({"erro": "Inbound já está encerrado"}, status_code=400)
+
+        itens = list(embale.itens)
+        resultados = []
+        erros = []
+
+        for item in itens:
+            # Pula itens já baixados
+            if item.baixa_aplicada == 1:
+                resultados.append({
+                    "item_id": item.id,
+                    "status": "ja_baixado",
+                    "mensagem": "Já foi baixado anteriormente"
+                })
+                continue
+
+            # Resolver produto Olist
+            produto_id, nome_olist = _resolver_olist_para_item(item)
+            if not produto_id:
+                erros.append({
+                    "item_id": item.id,
+                    "erro": "Produto não encontrado na Olist"
+                })
+                continue
+
+            # Determinar quantidade a baixar
+            item_id_str = str(item.id)
+            if item_id_str in itens_declarados:
+                # Usuário declarou uma quantidade (para itens com falta)
+                qtd_baixar = float(itens_declarados[item_id_str])
+            else:
+                # Usar a quantidade do FULL (nenhuma falta)
+                qtd_baixar = item.quantidade_separada or 0
+
+            if qtd_baixar <= 0:
+                resultados.append({
+                    "item_id": item.id,
+                    "status": "zerado",
+                    "mensagem": "Quantidade a baixar é zero"
+                })
+                continue
+
+            # Aplicar a baixa na Olist (tipo='S' = Saída)
+            sucesso = olist.atualizar_estoque(
+                produto_id=produto_id,
+                quantidade=qtd_baixar,
+                tipo="S",  # Saída
+                observacao=f"Baixa do Inbound #{embale.numero_inbound} (FULL)"
+            )
+
+            if sucesso:
+                # Registrar a baixa aplicada
+                item.quantidade_baixada = qtd_baixar
+                item.baixa_aplicada = 1
+                item.data_baixa = datetime.utcnow()
+                db.add(item)
+                resultados.append({
+                    "item_id": item.id,
+                    "status": "ok",
+                    "quantidade_baixada": qtd_baixar,
+                    "mensagem": f"Baixa de {qtd_baixar} un. aplicada com sucesso"
+                })
+            else:
+                erros.append({
+                    "item_id": item.id,
+                    "erro": f"Falha ao aplicar baixa na Olist"
+                })
+
+        db.commit()
+
+        resumo_sucesso = sum(1 for r in resultados if r.get("status") in ["ok", "ja_baixado"])
+        return JSONResponse({
+            "embale_id": embale.id,
+            "total_itens": len(itens),
+            "sucesso": resumo_sucesso,
+            "erros_count": len(erros),
+            "resultados": resultados,
+            "erros": erros,
+            "mensagem": f"{resumo_sucesso}/{len(itens)} itens processados com sucesso"
+        })
+
+    except Exception as e:
+        db.rollback()
+        return JSONResponse({"erro": str(e)}, status_code=500)
+    finally:
+        db.close()
+
+
 async def encerrar_embale(request: Request):
     """
     POST /api/embaldes/{embale_id}/encerrar
@@ -1882,6 +2017,7 @@ routes = [
     Route("/api/embaldes/{embale_id}", obter_embale, methods=["GET"]),
     Route("/api/embaldes/{embale_id}/data-limite", atualizar_data_limite_embale, methods=["POST"]),
     Route("/api/embaldes/{embale_id}/revisao", revisar_baixa_embale, methods=["GET"]),
+    Route("/api/embaldes/{embale_id}/confirmar-baixa", confirmar_baixa_embale, methods=["POST"]),
     Route("/api/embaldes/{embale_id}/encerrar", encerrar_embale, methods=["POST"]),
 ]
 
