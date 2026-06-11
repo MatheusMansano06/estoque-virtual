@@ -30,6 +30,7 @@ interface Inbound {
 }
 
 type Aba = 'processando' | 'encerrado'
+type VisaoInbound = 'upload' | 'lista'
 
 interface ItemRevisao {
   item_id: number
@@ -68,6 +69,7 @@ export function EmbaldesManager() {
   const [arquivo, setArquivo] = useState<File | null>(null)
   const [inboundSelecionado, setInboundSelecionado] = useState<Inbound | null>(null)
   const [aba, setAba] = useState<Aba>('processando')
+  const [visao, setVisao] = useState<VisaoInbound>('upload')
   const [editandoData, setEditandoData] = useState<number | null>(null)
   const [novaData, setNovaData] = useState('')
   const [revisao, setRevisao] = useState<Revisao | null>(null)
@@ -142,6 +144,20 @@ export function EmbaldesManager() {
     } finally {
       setLoading(false)
     }
+  }
+
+  const irParaLista = async () => {
+    setVisao('lista')
+    await carregarInbounds()
+  }
+
+  const voltarParaUpload = () => {
+    setVisao('upload')
+    setInboundSelecionado(null)
+    setRevisandoId(null)
+    setRevisao(null)
+    setDeclaracoes({})
+    setItensBaixados({})
   }
 
   const carregarDetalhes = async (inb: Inbound) => {
@@ -320,18 +336,64 @@ export function EmbaldesManager() {
   )
   const countProcessando = inbounds.filter((i) => ehAtivo(i.status)).length
   const countEncerrado = inbounds.filter((i) => i.status === 'encerrado').length
+  const sucessoUpload = message && !message.toLowerCase().includes('erro')
 
   return (
     <div style={{ padding: '2rem' }}>
-      <h2>Inbound (Lista de Separação ML FULL)</h2>
+      <div style={{
+        display: 'flex',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        gap: '1rem',
+        marginBottom: '1.25rem',
+        flexWrap: 'wrap'
+      }}>
+        <h2 style={{ margin: 0, color: '#061a35' }}>Inbound (Lista de Separação ML FULL)</h2>
+        {visao === 'upload' ? (
+          <button
+            type="button"
+            onClick={irParaLista}
+            style={{
+              padding: '0.75rem 1.2rem',
+              background: '#0878ff',
+              color: '#fff',
+              border: '1px solid #0878ff',
+              borderRadius: '6px',
+              cursor: 'pointer',
+              fontWeight: 'bold',
+              boxShadow: '0 8px 18px rgba(8, 120, 255, 0.22)'
+            }}
+          >
+            Ver Inbounds
+          </button>
+        ) : (
+          <button
+            type="button"
+            onClick={voltarParaUpload}
+            style={{
+              padding: '0.75rem 1.2rem',
+              background: '#ffffff',
+              color: '#0878ff',
+              border: '1px solid #0878ff',
+              borderRadius: '6px',
+              cursor: 'pointer',
+              fontWeight: 'bold'
+            }}
+          >
+            Voltar para subir lista
+          </button>
+        )}
+      </div>
 
       {/* Formulário de Upload */}
+      {visao === 'upload' && (
       <div style={{
-        backgroundColor: '#f5f5f5',
+        backgroundColor: '#ffffff',
         padding: '1.5rem',
         borderRadius: '8px',
         marginBottom: '2rem',
-        border: '1px solid #ddd'
+        border: '1px solid rgba(8, 120, 255, 0.18)',
+        boxShadow: '0 18px 45px rgba(6, 26, 53, 0.14)'
       }}>
         <h3 style={{ marginTop: 0 }}>Subir Inbound</h3>
         <p style={{ color: '#666', fontSize: '0.9rem', marginBottom: '1.5rem' }}>
@@ -425,71 +487,105 @@ export function EmbaldesManager() {
             backgroundColor: message.toLowerCase().includes('erro') ? '#ffebee' : '#e8f5e9',
             color: message.toLowerCase().includes('erro') ? '#c62828' : '#2e7d32',
             borderRadius: '4px',
-            fontWeight: 'bold'
+            fontWeight: 'bold',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: '1rem',
+            flexWrap: 'wrap'
           }}>
-            {message}
+            <span>{message}</span>
+            {sucessoUpload && (
+              <button
+                type="button"
+                onClick={irParaLista}
+                style={{
+                  padding: '0.55rem 1rem',
+                  background: '#0878ff',
+                  color: '#fff',
+                  border: 'none',
+                  borderRadius: '5px',
+                  cursor: 'pointer',
+                  fontWeight: 'bold'
+                }}
+              >
+                Ver Inbounds
+              </button>
+            )}
           </div>
         )}
       </div>
+      )}
 
-      {/* Abas */}
-      <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1.5rem', borderBottom: '2px solid #eee' }}>
-        <button
-          onClick={() => setAba('processando')}
-          style={{
-            padding: '0.75rem 1.5rem',
-            border: 'none',
-            background: 'none',
-            cursor: 'pointer',
-            fontWeight: 'bold',
-            fontSize: '1rem',
-            color: aba === 'processando' ? '#1976D2' : '#999',
-            borderBottom: aba === 'processando' ? '3px solid #1976D2' : '3px solid transparent',
-            marginBottom: '-2px'
-          }}
-        >
-          Ativos ({countProcessando})
-        </button>
-        <button
-          onClick={() => setAba('encerrado')}
-          style={{
-            padding: '0.75rem 1.5rem',
-            border: 'none',
-            background: 'none',
-            cursor: 'pointer',
-            fontWeight: 'bold',
-            fontSize: '1rem',
-            color: aba === 'encerrado' ? '#1976D2' : '#999',
-            borderBottom: aba === 'encerrado' ? '3px solid #1976D2' : '3px solid transparent',
-            marginBottom: '-2px'
-          }}
-        >
-          Encerrados ({countEncerrado})
-        </button>
-      </div>
+      {visao === 'lista' && (
+      <div style={{
+        backgroundColor: '#ffffff',
+        padding: '1.5rem',
+        borderRadius: '8px',
+        border: '1px solid rgba(8, 120, 255, 0.18)',
+        boxShadow: '0 18px 45px rgba(6, 26, 53, 0.14)'
+      }}>
+        <h3 style={{ marginTop: 0, marginBottom: '1rem', color: '#061a35' }}>Gestão de Inbounds</h3>
 
-      {/* Lista de Inbounds */}
-      {inboundsFiltrados.length === 0 ? (
-        <p style={{ color: '#999', textAlign: 'center', padding: '2rem' }}>
-          {aba === 'processando' ? 'Nenhum inbound processando.' : 'Nenhum inbound encerrado.'}
-        </p>
-      ) : (
-        <div style={{ display: 'grid', gap: '1rem' }}>
-          {inboundsFiltrados.map((inb) => (
-            <div
-              key={inb.id}
-              style={{
-                border: '1px solid #ddd',
-                borderRadius: '8px',
-                padding: '1.5rem',
-                backgroundColor: inb.status === 'encerrado' ? '#fafafa' : '#fff'
-              }}
-            >
+        {/* Abas */}
+        <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1.5rem', borderBottom: '2px solid #eef3f8', flexWrap: 'wrap' }}>
+          <button
+            onClick={() => setAba('processando')}
+            style={{
+              padding: '0.75rem 1.5rem',
+              border: 'none',
+              background: 'none',
+              cursor: 'pointer',
+              fontWeight: 'bold',
+              fontSize: '1rem',
+              color: aba === 'processando' ? '#1976D2' : '#6d7b8f',
+              borderBottom: aba === 'processando' ? '3px solid #1976D2' : '3px solid transparent',
+              marginBottom: '-2px'
+            }}
+          >
+            Ativos ({countProcessando})
+          </button>
+          <button
+            onClick={() => setAba('encerrado')}
+            style={{
+              padding: '0.75rem 1.5rem',
+              border: 'none',
+              background: 'none',
+              cursor: 'pointer',
+              fontWeight: 'bold',
+              fontSize: '1rem',
+              color: aba === 'encerrado' ? '#1976D2' : '#6d7b8f',
+              borderBottom: aba === 'encerrado' ? '3px solid #1976D2' : '3px solid transparent',
+              marginBottom: '-2px'
+            }}
+          >
+            Encerrados ({countEncerrado})
+          </button>
+        </div>
+
+        {/* Lista de Inbounds */}
+        {inboundsFiltrados.length === 0 ? (
+          <p style={{ color: '#6d7b8f', textAlign: 'center', padding: '2rem' }}>
+            {aba === 'processando' ? 'Nenhum inbound processando.' : 'Nenhum inbound encerrado.'}
+          </p>
+        ) : (
+          <div style={{ display: 'grid', gap: '1rem' }}>
+            {inboundsFiltrados.map((inb) => (
               <div
-                style={{ display: 'grid', gridTemplateColumns: '2fr 1.5fr 1fr auto', gap: '1.5rem', alignItems: 'center', cursor: 'pointer' }}
+                key={inb.id}
+                style={{
+                  border: '1px solid rgba(8, 120, 255, 0.16)',
+                  borderRadius: '8px',
+                  padding: '1.5rem',
+                  backgroundColor: inb.status === 'encerrado' ? '#f8fbff' : '#fff',
+                  boxShadow: '0 8px 22px rgba(6, 26, 53, 0.08)'
+                }}
+              >
+              <div
+                style={{ display: 'flex', justifyContent: 'space-between', gap: '1.5rem', alignItems: 'center', cursor: 'pointer', flexWrap: 'wrap' }}
                 onClick={() => carregarDetalhes(inb)}
               >
-                <div>
+                <div style={{ flex: '1 1 220px', minWidth: 0 }}>
                   <div style={{ fontWeight: 'bold', fontSize: '1.1rem' }}>{inb.nome_embalde}</div>
                   <div style={{ color: '#666', fontSize: '0.85rem', marginTop: '0.4rem' }}>
                     {inb.numero_inbound ? `Frete #${inb.numero_inbound}` : 'Sem número'}
@@ -498,7 +594,7 @@ export function EmbaldesManager() {
                 </div>
 
                 {/* Data limite */}
-                <div style={{ fontSize: '0.85rem' }} onClick={(e) => e.stopPropagation()}>
+                <div style={{ flex: '1 1 180px', minWidth: 0, fontSize: '0.85rem' }} onClick={(e) => e.stopPropagation()}>
                   {editandoData === inb.id ? (
                     <div style={{ display: 'flex', gap: '0.4rem', alignItems: 'center', flexWrap: 'wrap' }}>
                       <input
@@ -539,7 +635,7 @@ export function EmbaldesManager() {
                 </div>
 
                 {/* Vinculados */}
-                <div style={{ textAlign: 'center' }}>
+                <div style={{ flex: '0 1 110px', textAlign: 'center' }}>
                   <div style={{ fontSize: '1.1rem', fontWeight: 'bold', color: inb.qtd_validados === inb.qtd_items ? '#2e7d32' : '#ef6c00' }}>
                     {inb.qtd_validados}/{inb.qtd_items}
                   </div>
@@ -547,7 +643,7 @@ export function EmbaldesManager() {
                 </div>
 
                 {/* Ação */}
-                <div onClick={(e) => e.stopPropagation()} style={{ display: 'flex', gap: '0.5rem', flexDirection: 'column' }}>
+                <div onClick={(e) => e.stopPropagation()} style={{ display: 'flex', gap: '0.5rem', flexDirection: 'column', flex: '0 1 130px' }}>
                   <button
                     onClick={() => carregarRevisao(inb.id)}
                     style={{ padding: '0.5rem 1rem', background: revisandoId === inb.id ? '#1976D2' : '#fff', color: revisandoId === inb.id ? '#fff' : '#1976D2', border: '1px solid #1976D2', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold', fontSize: '0.85rem', whiteSpace: 'nowrap' }}
@@ -571,7 +667,7 @@ export function EmbaldesManager() {
 
               {/* Revisão de baixa na Olist */}
               {revisandoId === inb.id && (
-                <div style={{ marginTop: '1.5rem', paddingTop: '1.5rem', borderTop: '2px solid #1976D2' }}>
+                <div style={{ marginTop: '1.5rem', paddingTop: '1.5rem', borderTop: '2px solid #1976D2', overflowX: 'auto' }}>
                   {carregandoRevisao ? (
                     <div style={{ textAlign: 'center', padding: '2rem', color: '#1976D2', fontWeight: 'bold' }}>
                       Consultando estoque na Olist, produto por produto... aguarde.
@@ -808,9 +904,11 @@ export function EmbaldesManager() {
                   </div>
                 </div>
               )}
-            </div>
-          ))}
-        </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
       )}
 
       {/* Modal de vínculo manual (item não achado na Olist) */}

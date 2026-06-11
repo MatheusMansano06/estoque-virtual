@@ -1064,8 +1064,8 @@ function App() {
       <div className="app">
         <header className="header">
           <div className="container">
-            <h1>ESTOQUE VIRTUAL</h1>
-            <p>Sistema de Inventário via Nota Fiscal Eletrônica</p>
+            <h1>NVS TECH</h1>
+            <p>Sistema de Gestão Inteligente de Estoque para Operações de Logística e Marketplace</p>
           </div>
         </header>
 
@@ -3244,7 +3244,7 @@ function App() {
           </div>
         </header>
         <main className="container main-content">
-          <FornecedoresManager />
+          <FornecedoresManager onVoltar={voltarParaInicial} />
         </main>
       </div>
     )
