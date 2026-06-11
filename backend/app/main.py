@@ -1144,7 +1144,7 @@ async def buscar_no_inbound(request: Request):
 
 
 def _calcular_reserva_inbound(db, olist_produto_id, olist_sku, disponivel=None,
-                              aplicar=False, agora=None):
+                              aplicar=False, agora=None, olist_nome=None):
     """
     REGRA DO INBOUND: verifica inbounds ATIVOS (não encerrados) que contêm
     este produto e ainda NÃO deram baixa, e calcula quanto da entrada deve
@@ -1223,6 +1223,12 @@ def _calcular_reserva_inbound(db, olist_produto_id, olist_sku, disponivel=None,
                     it.olist_produto_id = pid
                 if olist_sku and not it.olist_sku:
                     it.olist_sku = olist_sku
+                # Marca o item do inbound como VINCULADO (subir estoque pela NF
+                # também liga o anúncio aqui — senão aparecia "Sem vínculo").
+                if olist_nome and not it.olist_nome:
+                    it.olist_nome = olist_nome
+                it.validado = 1
+                it.validacao_mensagem = None
                 db.add(it)
 
             if restante is not None:
@@ -1282,7 +1288,8 @@ async def atualizar_estoque_olist(request: Request):
         if tipo == "E":
             reserva_full, reserva_detalhes = _calcular_reserva_inbound(
                 db, item.olist_produto_id, item.olist_sku,
-                disponivel=float(quantidade), aplicar=True, agora=agora
+                disponivel=float(quantidade), aplicar=True, agora=agora,
+                olist_nome=item.olist_nome
             )
 
         quantidade_subir = max(0.0, float(quantidade) - reserva_full)
@@ -2031,10 +2038,14 @@ async def revisar_baixa_embale(request: Request):
         for item in itens:
             pid, nome = _resolver_olist_para_item(item)
             resolvidos[item.id] = (pid, nome)
-            # Salva o vínculo se for novo (ainda não tinha olist_produto_id)
-            if pid and not item.olist_produto_id:
+            # Salva o vínculo se for novo (ainda não tinha olist_produto_id).
+            # Marca validado=1 também — senão o item aparecia "Sem vínculo"
+            # mesmo já tendo anúncio resolvido na Olist.
+            if pid and (not item.olist_produto_id or not item.validado):
                 item.olist_produto_id = pid
                 item.olist_nome = nome
+                item.validado = 1
+                item.validacao_mensagem = None
                 db.add(item)
                 houve_novo_vinculo = True
         if houve_novo_vinculo:
@@ -2078,6 +2089,7 @@ async def revisar_baixa_embale(request: Request):
                     "falta": None,
                     "tem_falta": False,
                     "baixa_aplicada": item.baixa_aplicada or 0,
+                    "vinculado": item.validado or 0,
                 })
                 continue
 
@@ -2100,6 +2112,7 @@ async def revisar_baixa_embale(request: Request):
                     "tem_falta": False,
                     "estoque_indisponivel": True,
                     "baixa_aplicada": item.baixa_aplicada or 0,
+                    "vinculado": item.validado or 0,
                 })
                 continue
 
@@ -2127,6 +2140,7 @@ async def revisar_baixa_embale(request: Request):
                 "falta": falta,
                 "tem_falta": tem_falta,
                 "baixa_aplicada": item.baixa_aplicada or 0,
+                "vinculado": item.validado or 0,
             })
 
         return JSONResponse({

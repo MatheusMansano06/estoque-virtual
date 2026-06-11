@@ -46,6 +46,7 @@ interface ItemRevisao {
   tem_falta: boolean
   estoque_indisponivel?: boolean
   baixa_aplicada: number
+  vinculado?: number
 }
 
 interface Revisao {
@@ -76,6 +77,9 @@ export function EmbaldesManager() {
   const [confirmandoBaixa, setConfirmandoBaixa] = useState(false)
   const [baixandoItemId, setBaixandoItemId] = useState<number | null>(null)
   const [itensBaixados, setItensBaixados] = useState<Record<number, number>>({})
+  // Filtro da tabela de revisão
+  type FiltroRev = 'todos' | 'vinculados' | 'nao_vinculados' | 'baixados' | 'nao_baixados'
+  const [filtroRevisao, setFiltroRevisao] = useState<FiltroRev>('todos')
   // Vínculo manual de item "não achado"
   const [vinculandoItem, setVinculandoItem] = useState<ItemRevisao | null>(null)
   const [buscaTermo, setBuscaTermo] = useState('')
@@ -145,6 +149,9 @@ export function EmbaldesManager() {
       setInboundSelecionado(null)
       return
     }
+    // Visões mutuamente exclusivas: abrir os itens fecha a revisão Olist.
+    setRevisandoId(null)
+    setRevisao(null)
     try {
       const resposta = await api.get(`/embaldes/${inb.id}`)
       setInboundSelecionado(resposta.data)
@@ -186,10 +193,13 @@ export function EmbaldesManager() {
     }
     try {
       setCarregandoRevisao(true)
+      // Visões mutuamente exclusivas: abrir a revisão fecha a lista de itens.
+      setInboundSelecionado(null)
       setRevisandoId(id)
       setRevisao(null)
       setDeclaracoes({})
       setItensBaixados({})
+      setFiltroRevisao('todos')
       const resposta = await api.get(`/embaldes/${id}/revisao`)
       setRevisao(resposta.data)
       // Marca os que já foram baixados antes
@@ -584,12 +594,47 @@ export function EmbaldesManager() {
                         </div>
                       </div>
 
-                      <div style={{ fontSize: '0.8rem', color: '#666', marginBottom: '0.75rem', fontStyle: 'italic' }}>
+                      <div style={{ fontSize: '0.85rem', color: '#666', marginBottom: '0.75rem', fontStyle: 'italic' }}>
                         Revisão (somente leitura) — selecione quantas unidades baixar em cada item.
                       </div>
 
+                      {/* Filtros */}
+                      {(() => {
+                        const itBaixado = (it: ItemRevisao) => it.baixa_aplicada === 1 || !!itensBaixados[it.item_id]
+                        const itVinc = (it: ItemRevisao) => it.vinculado === 1 || !!it.olist_produto_id
+                        const chips: { id: FiltroRev; label: string; n: number }[] = [
+                          { id: 'todos', label: 'Todos', n: revisao.itens.length },
+                          { id: 'vinculados', label: 'Vinculados', n: revisao.itens.filter(itVinc).length },
+                          { id: 'nao_vinculados', label: 'Não vinculados', n: revisao.itens.filter((i) => !itVinc(i)).length },
+                          { id: 'baixados', label: 'Estoque retirado', n: revisao.itens.filter(itBaixado).length },
+                          { id: 'nao_baixados', label: 'Ainda não retirado', n: revisao.itens.filter((i) => !itBaixado(i)).length },
+                        ]
+                        return (
+                          <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '0.75rem', flexWrap: 'wrap' }}>
+                            {chips.map((c) => {
+                              const ativo = filtroRevisao === c.id
+                              return (
+                                <button
+                                  key={c.id}
+                                  onClick={() => setFiltroRevisao(c.id)}
+                                  style={{
+                                    padding: '0.4rem 0.9rem', borderRadius: '999px', cursor: 'pointer',
+                                    fontSize: '0.85rem', fontWeight: 600,
+                                    border: ativo ? '1px solid #1976D2' : '1px solid #ddd',
+                                    background: ativo ? '#1976D2' : '#fff',
+                                    color: ativo ? '#fff' : '#555',
+                                  }}
+                                >
+                                  {c.label} <span style={{ opacity: 0.8 }}>({c.n})</span>
+                                </button>
+                              )
+                            })}
+                          </div>
+                        )
+                      })()}
+
                       {/* Tabela */}
-                      <div style={{ display: 'grid', gridTemplateColumns: '2fr 0.9fr 0.9fr 0.9fr 1.1fr 0.8fr 1fr', gap: '0.5rem', padding: '0.6rem 0.8rem', background: '#f5f5f5', borderRadius: '4px 4px 0 0', fontSize: '0.75rem', fontWeight: 'bold', color: '#666', textTransform: 'uppercase' }}>
+                      <div style={{ display: 'grid', gridTemplateColumns: '2.4fr 0.9fr 0.9fr 0.9fr 1.1fr 0.8fr 1fr', gap: '0.5rem', padding: '0.7rem 0.9rem', background: '#f5f5f5', borderRadius: '4px 4px 0 0', fontSize: '0.8rem', fontWeight: 'bold', color: '#555', textTransform: 'uppercase' }}>
                         <div>Produto / SKU</div>
                         <div style={{ textAlign: 'center' }}>Estoque Olist</div>
                         <div style={{ textAlign: 'center' }}>Vai pro FULL</div>
@@ -598,21 +643,45 @@ export function EmbaldesManager() {
                         <div style={{ textAlign: 'center' }}>Declarar</div>
                         <div style={{ textAlign: 'center' }}>Ação</div>
                       </div>
-                      <div style={{ maxHeight: '500px', overflowY: 'auto', border: '1px solid #eee', borderTop: 'none' }}>
-                        {revisao.itens.map((it) => {
+                      <div style={{ maxHeight: '560px', overflowY: 'auto', border: '1px solid #eee', borderTop: 'none' }}>
+                        {revisao.itens.filter((it) => {
+                          const baixado = it.baixa_aplicada === 1 || !!itensBaixados[it.item_id]
+                          const vinc = it.vinculado === 1 || !!it.olist_produto_id
+                          if (filtroRevisao === 'vinculados') return vinc
+                          if (filtroRevisao === 'nao_vinculados') return !vinc
+                          if (filtroRevisao === 'baixados') return baixado
+                          if (filtroRevisao === 'nao_baixados') return !baixado
+                          return true
+                        }).map((it) => {
                           const naoAchado = !it.olist_encontrado
                           const semEstoque = it.olist_encontrado && it.estoque_indisponivel
                           const bg = naoAchado ? '#fff8f0' : it.tem_falta ? '#ffebee' : '#fff'
-                          const jaBaixado = !!itensBaixados[it.item_id]
+                          const jaBaixado = it.baixa_aplicada === 1 || !!itensBaixados[it.item_id]
+                          const vinculado = it.vinculado === 1 || !!it.olist_produto_id
                           const podeBaixar = it.olist_encontrado && !semEstoque && !jaBaixado
                           return (
                             <div
                               key={it.item_id}
-                              style={{ display: 'grid', gridTemplateColumns: '2fr 0.9fr 0.9fr 0.9fr 1.1fr 0.8fr 1fr', gap: '0.5rem', padding: '0.7rem 0.8rem', background: jaBaixado ? '#eef7ee' : bg, borderBottom: '1px solid #f0f0f0', fontSize: '0.85rem', alignItems: 'center', opacity: jaBaixado ? 0.75 : 1 }}
+                              style={{ display: 'grid', gridTemplateColumns: '2.4fr 0.9fr 0.9fr 0.9fr 1.1fr 0.8fr 1fr', gap: '0.5rem', padding: '0.8rem 0.9rem', background: jaBaixado ? '#eef7ee' : bg, borderBottom: '1px solid #f0f0f0', fontSize: '0.9rem', alignItems: 'center', opacity: jaBaixado ? 0.8 : 1 }}
                             >
                               <div>
-                                <div style={{ fontWeight: 600 }}>{it.titulo_anuncio}</div>
-                                <div style={{ fontSize: '0.78rem', color: '#666' }}>SKU: {it.sku_inbound || '—'}</div>
+                                <div style={{ fontWeight: 600, lineHeight: 1.3 }}>{it.titulo_anuncio}</div>
+                                <div style={{ fontSize: '0.8rem', color: '#666', marginTop: '0.2rem', display: 'flex', alignItems: 'center', gap: '0.4rem', flexWrap: 'wrap' }}>
+                                  <span>SKU: {it.sku_inbound || '—'}</span>
+                                  <span style={{
+                                    padding: '0.1rem 0.45rem', borderRadius: '999px', fontSize: '0.7rem', fontWeight: 700,
+                                    background: vinculado ? '#e8f5e9' : '#fff3e0',
+                                    color: vinculado ? '#2e7d32' : '#ef6c00',
+                                    border: `1px solid ${vinculado ? '#a5d6a7' : '#ffcc80'}`
+                                  }}>
+                                    {vinculado ? '✓ vinculado' : 'sem vínculo'}
+                                  </span>
+                                  {jaBaixado && (
+                                    <span style={{ padding: '0.1rem 0.45rem', borderRadius: '999px', fontSize: '0.7rem', fontWeight: 700, background: '#e3f2fd', color: '#1565c0', border: '1px solid #90caf9' }}>
+                                      ↓ estoque retirado
+                                    </span>
+                                  )}
+                                </div>
                               </div>
                               <div style={{ textAlign: 'center', fontWeight: 'bold' }}>
                                 {naoAchado ? '—' : semEstoque ? '?' : it.estoque_atual}
