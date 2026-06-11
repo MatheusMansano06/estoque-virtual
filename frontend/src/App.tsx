@@ -110,6 +110,10 @@ function App() {
   // Reserva de inbound ativo para o produto selecionado (regra do FULL)
   const [reservaInbound, setReservaInbound] = useState(0)
   const [reservaInboundInbs, setReservaInboundInbs] = useState('')
+  // Candidatos do inbound que podem ser este mesmo produto (p/ confirmar)
+  const [inboundCandidatos, setInboundCandidatos] = useState<any[]>([])
+  const [candidatoVinculado, setCandidatoVinculado] = useState<any>(null)
+  const [vinculandoCandidato, setVinculandoCandidato] = useState(false)
   // Memória de vínculos (de-para fornecedor -> Olist)
   const [sugestaoVinculo, setSugestaoVinculo] = useState<any>(null)
   const [sugestaoDispensada, setSugestaoDispensada] = useState(false)
@@ -155,6 +159,8 @@ function App() {
   // Quando um anúncio Olist é selecionado, verifica se esse produto está
   // separado em algum inbound ATIVO (regra do FULL) para mostrar no preview.
   useEffect(() => {
+    setCandidatoVinculado(null)
+    setInboundCandidatos([])
     if (!produtoOlistSelecionado.sku && !produtoOlistSelecionado.id) {
       setReservaInbound(0)
       setReservaInboundInbs('')
@@ -167,11 +173,69 @@ function App() {
     fetch(`http://127.0.0.1:8000/api/embaldes/reserva-produto?${params}`)
       .then((r) => r.json())
       .then((d) => {
-        setReservaInbound(Math.round(d.reservado_full || 0))
+        const reserva = Math.round(d.reservado_full || 0)
+        setReservaInbound(reserva)
         setReservaInboundInbs((d.detalhes || []).map((x: any) => `#${x.numero_inbound}`).join(', '))
+        // Se já casou direto (vínculo/SKU), não precisa pedir confirmação.
+        if (reserva > 0) return
+        // Senão, busca CANDIDATOS no inbound (por título/SKU) p/ o usuário confirmar.
+        const p2 = new URLSearchParams({
+          olist_produto_id: produtoOlistSelecionado.id || '',
+          olist_sku: produtoOlistSelecionado.sku || '',
+          olist_nome: produtoOlistSelecionado.nome || ''
+        })
+        fetch(`http://127.0.0.1:8000/api/embaldes/buscar-no-inbound?${p2}`)
+          .then((r) => r.json())
+          .then((dc) => setInboundCandidatos(dc.candidatos || []))
+          .catch(() => setInboundCandidatos([]))
       })
       .catch(() => { setReservaInbound(0); setReservaInboundInbs('') })
   }, [produtoOlistSelecionado.id, produtoOlistSelecionado.sku])
+
+  // Confirma que um candidato do inbound é este produto: vincula o item do
+  // inbound a este anúncio (de-para) e recalcula a reserva pro FULL.
+  const confirmarCandidatoInbound = async (cand: any) => {
+    if (!produtoOlistSelecionado.id) {
+      alert('❌ Anúncio Olist sem ID — selecione o anúncio novamente.')
+      return
+    }
+    setVinculandoCandidato(true)
+    try {
+      const res = await fetch(
+        `http://127.0.0.1:8000/api/embaldes/${cand.inbound_id}/itens/${cand.item_id}/vincular`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            olist_produto_id: produtoOlistSelecionado.id,
+            olist_sku: produtoOlistSelecionado.sku,
+            olist_nome: produtoOlistSelecionado.nome,
+            olist_preco: produtoOlistSelecionado.preco
+          })
+        }
+      )
+      if (!res.ok) {
+        const e = await res.json()
+        alert('❌ Erro ao vincular ao inbound: ' + (e.erro || 'desconhecido'))
+        return
+      }
+      // Recalcula a reserva (agora casa por produto_id)
+      const params = new URLSearchParams({
+        olist_produto_id: produtoOlistSelecionado.id || '',
+        olist_sku: produtoOlistSelecionado.sku || ''
+      })
+      const r = await fetch(`http://127.0.0.1:8000/api/embaldes/reserva-produto?${params}`)
+      const d = await r.json()
+      setReservaInbound(Math.round(d.reservado_full || 0))
+      setReservaInboundInbs((d.detalhes || []).map((x: any) => `#${x.numero_inbound}`).join(', '))
+      setCandidatoVinculado(cand)
+      setInboundCandidatos([])
+    } catch (err) {
+      alert('❌ Erro: ' + err)
+    } finally {
+      setVinculandoCandidato(false)
+    }
+  }
 
   // Usa a sugestão: busca dados frescos (estoque) do anúncio e seleciona
   const usarSugestao = async () => {
@@ -2975,6 +3039,70 @@ function App() {
                     </p>
                   </div>
                 </div>
+              </div>
+            )}
+
+            {/* CANDIDATOS NO INBOUND — confirmar se é o mesmo produto */}
+            {produtoOlistSelecionado.sku && produtoSelecionado && reservaInbound === 0 &&
+             !candidatoVinculado && inboundCandidatos.length > 0 && (
+              <div style={{
+                background: '#fff8e1',
+                border: '2px solid #ffb300',
+                padding: '1.25rem',
+                borderRadius: '8px',
+                marginBottom: '1.5rem'
+              }}>
+                <h3 style={{ color: '#e65100', marginTop: 0, marginBottom: '0.5rem' }}>
+                  🔎 Esse produto está num inbound em processo?
+                </h3>
+                <p style={{ color: '#7a5b00', fontSize: '0.85rem', margin: '0 0 1rem 0' }}>
+                  Encontrei {inboundCandidatos.length} {inboundCandidatos.length === 1 ? 'item parecido' : 'itens parecidos'} no seu inbound (SKU do inbound é do Mercado Livre, por isso confirme pelo título). Se for o mesmo, eu <strong>seguro a quantidade do FULL</strong> e subo só o resto na Olist.
+                </p>
+                {inboundCandidatos.map((c) => (
+                  <div key={c.item_id} style={{
+                    display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                    gap: '1rem', padding: '0.75rem 1rem', marginBottom: '0.5rem',
+                    background: 'white', border: '1px solid #ffe082', borderRadius: '6px'
+                  }}>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontWeight: 600, color: '#1a1a1a', fontSize: '0.9rem' }}>
+                        {c.titulo}
+                      </div>
+                      <div style={{ color: '#888', fontSize: '0.78rem', marginTop: '0.15rem' }}>
+                        SKU inbound: {c.sku_inbound || '—'} · Inbound #{c.numero_inbound} ({c.status_inbound})
+                      </div>
+                      <div style={{ fontSize: '0.82rem', marginTop: '0.25rem' }}>
+                        {c.baixa_aplicada === 1 ? (
+                          <span style={{ color: '#2e7d32', fontWeight: 600 }}>
+                            ✓ {c.qtd_full} un — já foi baixado deste inbound (não segura de novo)
+                          </span>
+                        ) : (
+                          <span style={{ color: '#e65100', fontWeight: 600 }}>
+                            📦 {c.restante_full} un destinadas ao FULL — ainda NÃO baixadas
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => confirmarCandidatoInbound(c)}
+                      disabled={vinculandoCandidato}
+                      style={{
+                        padding: '0.6rem 1rem', whiteSpace: 'nowrap',
+                        background: vinculandoCandidato ? '#ccc' : '#ef6c00',
+                        color: 'white', border: 'none', borderRadius: '5px',
+                        fontWeight: 600, fontSize: '0.85rem',
+                        cursor: vinculandoCandidato ? 'wait' : 'pointer'
+                      }}
+                    >
+                      {vinculandoCandidato ? 'Vinculando…'
+                        : c.baixa_aplicada === 1 ? 'É esse (já baixado)'
+                        : `É esse — segurar ${c.restante_full}`}
+                    </button>
+                  </div>
+                ))}
+                <p style={{ color: '#999', fontSize: '0.75rem', margin: '0.5rem 0 0 0' }}>
+                  Não é nenhum desses? Pode ignorar — vai subir a quantidade cheia normalmente.
+                </p>
               </div>
             )}
 

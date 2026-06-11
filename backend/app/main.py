@@ -13,6 +13,7 @@ import urllib.request
 import urllib.parse
 from dotenv import load_dotenv
 from difflib import SequenceMatcher
+import unicodedata
 import io
 
 from app.models import (
@@ -993,6 +994,151 @@ async def aceitar_sugestao_vinculo(request: Request):
     except Exception as e:
         db.rollback()
         return JSONResponse({"error": str(e)}, status_code=500)
+    finally:
+        db.close()
+
+
+_STOPWORDS_TITULO = {
+    "de", "da", "do", "com", "para", "por", "em", "no", "na", "kit",
+    "un", "und", "pç", "pc", "pcs", "und.", "modelo", "original", "tipo",
+}
+
+
+def _normalizar_tokens(texto):
+    """Quebra um título em tokens significativos (sem acento, minúsculo,
+    sem pontuação/números/stopwords) para comparar produtos."""
+    if not texto:
+        return []
+    t = unicodedata.normalize("NFKD", str(texto))
+    t = "".join(c for c in t if not unicodedata.combining(c))
+    t = t.lower()
+    limpo = "".join(c if c.isalnum() else " " for c in t)
+    toks = []
+    for w in limpo.split():
+        if len(w) <= 2 or w.isdigit() or w in _STOPWORDS_TITULO:
+            continue
+        toks.append(w)
+    return toks
+
+
+def _similaridade_titulo(a, b):
+    """Jaccard dos tokens significativos de dois títulos (0..1)."""
+    ta, tb = set(_normalizar_tokens(a)), set(_normalizar_tokens(b))
+    if not ta or not tb:
+        return 0.0
+    inter = len(ta & tb)
+    uni = len(ta | tb)
+    return inter / uni if uni else 0.0
+
+
+def _sku_tem_overlap(sku_a, sku_b):
+    """True se dois SKUs (de sistemas diferentes) compartilham um pedaço
+    significativo (>=4 chars). Ex.: ICON-FUME vs VISFUMICON -> compartilham
+    'icon' e 'fum'. Usado só como leve desempate, não como prova."""
+    a = "".join(c for c in (sku_a or "").lower() if c.isalnum())
+    b = "".join(c for c in (sku_b or "").lower() if c.isalnum())
+    if len(a) < 4 or len(b) < 4:
+        return False
+    for i in range(len(a) - 3):
+        if a[i:i + 4] in b:
+            return True
+    return False
+
+
+def _buscar_itens_inbound_similares(db, olist_produto_id, olist_sku,
+                                    olist_nome, limite=6):
+    """
+    Procura, nos inbounds ATIVOS (não encerrados), itens que provavelmente
+    são o MESMO produto deste anúncio Olist, mesmo que o SKU seja de outro
+    sistema (ML) ou o item ainda não tenha sido vinculado.
+
+    Sinais de match (em ordem de confiança):
+      - já vinculado a este olist_produto_id (score 100)
+      - SKU do inbound == SKU Olist (score 95)
+      - semelhança de título (Jaccard >= 0.45) -> score proporcional,
+        com leve bônus se os SKUs compartilham pedaço.
+
+    Retorna candidatos ordenados por score (maior primeiro). NÃO altera nada
+    — quem decide é o usuário (resolve ambiguidade tipo Fumê x Cristal).
+    """
+    pid = str(olist_produto_id) if olist_produto_id else None
+    sku = (olist_sku or "").strip().lower()
+    candidatos = []
+
+    # Tokens-ASSINATURA: palavras do título Olist cujo começo (3 chars) também
+    # aparece no SKU Olist. Ex.: anúncio "...Fume..." com SKU "VISFUMICON" ->
+    # 'fume' é assinatura (visFUMicon). Servem para distinguir VARIAÇÕES (Fumê
+    # x Cristal): o candidato que tem a assinatura ganha pontos.
+    sku_limpo = "".join(c for c in sku if c.isalnum())
+    assinaturas = set()
+    if sku_limpo:
+        for tok in set(_normalizar_tokens(olist_nome)):
+            if len(tok) >= 3 and tok[:3] in sku_limpo:
+                assinaturas.add(tok)
+
+    ativos = db.query(EmbaleFU).filter(EmbaleFU.status != "encerrado").all()
+    for emb in ativos:
+        for it in emb.itens:
+            score = 0.0
+            motivo = None
+            if pid and it.olist_produto_id and str(it.olist_produto_id) == pid:
+                score, motivo = 100.0, "vinculado"
+            elif sku and it.sku_inbound and it.sku_inbound.strip().lower() == sku:
+                score, motivo = 95.0, "sku"
+            else:
+                sim = _similaridade_titulo(olist_nome, it.titulo_anuncio)
+                if sim >= 0.45:
+                    motivo = "titulo"
+                    score = round(sim * 70, 1)
+                    if assinaturas:
+                        cand_toks = set(_normalizar_tokens(it.titulo_anuncio))
+                        frac = len(assinaturas & cand_toks) / len(assinaturas)
+                        score = round(score + frac * 30, 1)
+                    elif _sku_tem_overlap(it.sku_inbound, olist_sku):
+                        score = min(94.0, score + 10)
+            if not motivo:
+                continue
+
+            qtd_sep = it.quantidade_separada or 0
+            qtd_baix = it.quantidade_baixada or 0
+            candidatos.append({
+                "inbound_id": emb.id,
+                "numero_inbound": emb.numero_inbound,
+                "nome_inbound": emb.nome_embalde,
+                "status_inbound": emb.status,
+                "item_id": it.id,
+                "titulo": it.titulo_anuncio,
+                "sku_inbound": it.sku_inbound,
+                "qtd_full": qtd_sep,
+                "qtd_baixada": qtd_baix,
+                "restante_full": max(0, qtd_sep - qtd_baix),
+                "baixa_aplicada": int(it.baixa_aplicada or 0),
+                "ja_vinculado": bool(it.olist_produto_id),
+                "score": score,
+                "motivo": motivo,
+            })
+
+    candidatos.sort(key=lambda c: c["score"], reverse=True)
+    return candidatos[:limite]
+
+
+async def buscar_no_inbound(request: Request):
+    """
+    GET /api/embaldes/buscar-no-inbound?olist_produto_id=&olist_sku=&olist_nome=
+    Read-only: lista itens dos inbounds ATIVOS que provavelmente são este
+    produto, para o usuário confirmar antes de subir estoque.
+    """
+    db = SessionLocal()
+    try:
+        pid = request.query_params.get("olist_produto_id", "")
+        sku = request.query_params.get("olist_sku", "")
+        nome = request.query_params.get("olist_nome", "")
+        if not pid and not sku and not nome:
+            return JSONResponse({"candidatos": [], "total": 0})
+        cands = _buscar_itens_inbound_similares(db, pid, sku, nome)
+        return JSONResponse({"candidatos": cands, "total": len(cands)})
+    except Exception as e:
+        return JSONResponse({"erro": str(e)}, status_code=500)
     finally:
         db.close()
 
@@ -2300,6 +2446,7 @@ routes = [
     Route("/api/olist/aceitar-sugestao", aceitar_sugestao_vinculo, methods=["POST"]),
     Route("/api/olist/atualizar-estoque", atualizar_estoque_olist, methods=["POST"]),
     Route("/api/embaldes/reserva-produto", reserva_inbound_produto, methods=["GET"]),
+    Route("/api/embaldes/buscar-no-inbound", buscar_no_inbound, methods=["GET"]),
     Route("/api/olist/adicionar-manual", adicionar_produto_olist_manual, methods=["POST"]),
     # Memória de vínculos (de-para fornecedor -> Olist)
     Route("/api/olist/sugestao-vinculo", olist_sugestao_vinculo, methods=["GET"]),
