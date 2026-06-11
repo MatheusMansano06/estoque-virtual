@@ -1564,6 +1564,19 @@ async def upload_embale(request: Request):
         numero_inbound = resultado.get("numero_inbound")
         total_unidades = resultado.get("total_unidades", 0)
 
+        # IDEMPOTÊNCIA: se já existe um inbound com este número, SUBSTITUI
+        # (deleta o antigo e seus itens). Evita itens fantasmas/duplicados
+        # de uploads anteriores do mesmo inbound.
+        substituiu_id = None
+        if numero_inbound:
+            existente = db.query(EmbaleFU).filter(
+                EmbaleFU.numero_inbound == numero_inbound
+            ).first()
+            if existente:
+                substituiu_id = existente.id
+                db.delete(existente)  # cascade remove os itens antigos
+                db.commit()
+
         # Criar inbound no BD
         embale = EmbaleFU(
             nome_embalde=nome_embale,
@@ -1632,6 +1645,10 @@ async def upload_embale(request: Request):
 
         db.commit()
 
+        msg = f"Inbound {numero_inbound or ''} processado: {items_validados}/{items_processados} items vinculados"
+        if substituiu_id:
+            msg += " (substituiu um inbound anterior com o mesmo número)"
+
         return JSONResponse({
             "id": embale.id,
             "nome_embale": embale.nome_embalde,
@@ -1642,7 +1659,8 @@ async def upload_embale(request: Request):
             "itens_validados": items_validados,
             "itens_com_erro": len(items_com_erro),
             "erros": items_com_erro if items_com_erro else None,
-            "mensagem": f"Inbound {numero_inbound or ''} processado: {items_validados}/{items_processados} items vinculados"
+            "substituiu_inbound_id": substituiu_id,
+            "mensagem": msg
         })
 
     except Exception as e:
