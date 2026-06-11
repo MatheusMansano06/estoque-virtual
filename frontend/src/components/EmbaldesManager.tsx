@@ -76,6 +76,12 @@ export function EmbaldesManager() {
   const [confirmandoBaixa, setConfirmandoBaixa] = useState(false)
   const [baixandoItemId, setBaixandoItemId] = useState<number | null>(null)
   const [itensBaixados, setItensBaixados] = useState<Record<number, number>>({})
+  // Vínculo manual de item "não achado"
+  const [vinculandoItem, setVinculandoItem] = useState<ItemRevisao | null>(null)
+  const [buscaTermo, setBuscaTermo] = useState('')
+  const [buscaResultados, setBuscaResultados] = useState<any[]>([])
+  const [buscandoOlist, setBuscandoOlist] = useState(false)
+  const [vinculandoProduto, setVinculandoProduto] = useState(false)
 
   useEffect(() => {
     carregarInbounds()
@@ -244,6 +250,51 @@ export function EmbaldesManager() {
       setMessage('Erro: ' + (erro.response?.data?.erro || String(erro)))
     } finally {
       setBaixandoItemId(null)
+    }
+  }
+
+  const abrirVinculo = (it: ItemRevisao) => {
+    setVinculandoItem(it)
+    const termo = it.sku_inbound || it.titulo_anuncio || ''
+    setBuscaTermo(termo)
+    setBuscaResultados([])
+    if (termo) buscarOlist(termo)
+  }
+
+  const buscarOlist = async (termo: string) => {
+    if (!termo || termo.trim().length < 1) return
+    try {
+      setBuscandoOlist(true)
+      const resposta = await api.get('/olist/produtos', { params: { q: termo.trim() } })
+      setBuscaResultados(resposta.data.produtos || [])
+    } catch (erro: any) {
+      setMessage('Erro na busca: ' + (erro.response?.data?.erro || String(erro)))
+    } finally {
+      setBuscandoOlist(false)
+    }
+  }
+
+  const vincularAnuncio = async (produto: any) => {
+    if (!vinculandoItem || !revisao) return
+    try {
+      setVinculandoProduto(true)
+      await api.post(`/embaldes/${revisao.embale_id}/itens/${vinculandoItem.item_id}/vincular`, {
+        olist_produto_id: produto.id,
+        olist_sku: produto.sku || produto.codigo_produto || '',
+        olist_nome: produto.nome || produto.descricao || '',
+        olist_preco: produto.preco || 0,
+      })
+      setMessage(`Vinculado: ${produto.nome || produto.descricao}`)
+      setVinculandoItem(null)
+      setBuscaResultados([])
+      // Recarrega a revisão (agora o item será achado e terá estoque)
+      const id = revisao.embale_id
+      setRevisandoId(null)
+      await carregarRevisao(id)
+    } catch (erro: any) {
+      setMessage('Erro ao vincular: ' + (erro.response?.data?.erro || String(erro)))
+    } finally {
+      setVinculandoProduto(false)
     }
   }
 
@@ -598,6 +649,13 @@ export function EmbaldesManager() {
                               <div style={{ textAlign: 'center' }}>
                                 {jaBaixado ? (
                                   <span style={{ color: '#2e7d32', fontWeight: 'bold', fontSize: '0.8rem' }}>✓ Baixado</span>
+                                ) : naoAchado ? (
+                                  <button
+                                    onClick={() => abrirVinculo(it)}
+                                    style={{ padding: '0.3rem 0.7rem', background: '#fff', color: '#ef6c00', border: '1px solid #ef6c00', borderRadius: '4px', cursor: 'pointer', fontSize: '0.8rem', fontWeight: 'bold' }}
+                                  >
+                                    Vincular
+                                  </button>
                                 ) : podeBaixar ? (
                                   <button
                                     onClick={() => baixarItem(it)}
@@ -683,6 +741,80 @@ export function EmbaldesManager() {
               )}
             </div>
           ))}
+        </div>
+      )}
+
+      {/* Modal de vínculo manual (item não achado na Olist) */}
+      {vinculandoItem && (
+        <div
+          onClick={() => { setVinculandoItem(null); setBuscaResultados([]) }}
+          style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{ background: '#fff', borderRadius: '8px', padding: '1.5rem', width: '640px', maxWidth: '92vw', maxHeight: '85vh', overflowY: 'auto', boxShadow: '0 10px 40px rgba(0,0,0,0.3)' }}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start', marginBottom: '0.5rem' }}>
+              <h3 style={{ margin: 0 }}>Vincular a um anúncio da Olist</h3>
+              <button onClick={() => { setVinculandoItem(null); setBuscaResultados([]) }} style={{ background: 'none', border: 'none', fontSize: '1.4rem', cursor: 'pointer', color: '#999', lineHeight: 1 }}>×</button>
+            </div>
+            <div style={{ fontSize: '0.85rem', color: '#666', marginBottom: '1rem' }}>
+              Produto do inbound: <strong>{vinculandoItem.titulo_anuncio}</strong>
+              <br />SKU do inbound: <strong>{vinculandoItem.sku_inbound || '—'}</strong>
+            </div>
+
+            {/* Busca */}
+            <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1rem' }}>
+              <input
+                type="text"
+                value={buscaTermo}
+                onChange={(e) => setBuscaTermo(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') buscarOlist(buscaTermo) }}
+                placeholder="Buscar por SKU ou nome do anúncio..."
+                autoFocus
+                style={{ flex: 1, padding: '0.6rem', border: '1px solid #ddd', borderRadius: '4px', fontSize: '0.95rem' }}
+              />
+              <button
+                onClick={() => buscarOlist(buscaTermo)}
+                disabled={buscandoOlist}
+                style={{ padding: '0.6rem 1.2rem', background: '#1976D2', color: '#fff', border: 'none', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold' }}
+              >
+                {buscandoOlist ? 'Buscando...' : 'Buscar'}
+              </button>
+            </div>
+
+            {/* Resultados */}
+            {buscandoOlist ? (
+              <div style={{ textAlign: 'center', padding: '1.5rem', color: '#666' }}>Buscando na Olist...</div>
+            ) : buscaResultados.length === 0 ? (
+              <div style={{ textAlign: 'center', padding: '1.5rem', color: '#999' }}>
+                {buscaTermo ? 'Nenhum anúncio encontrado. Tente outro termo.' : 'Digite um termo e busque.'}
+              </div>
+            ) : (
+              <div style={{ display: 'grid', gap: '0.5rem' }}>
+                {buscaResultados.map((p) => (
+                  <div
+                    key={p.id}
+                    style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.7rem 0.9rem', border: '1px solid #eee', borderRadius: '4px', gap: '1rem' }}
+                  >
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontWeight: 600, fontSize: '0.9rem' }}>{p.nome || p.descricao}</div>
+                      <div style={{ fontSize: '0.78rem', color: '#666' }}>
+                        SKU: {p.sku || p.codigo_produto || '—'}{p.preco ? ` · R$ ${Number(p.preco).toFixed(2)}` : ''}
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => vincularAnuncio(p)}
+                      disabled={vinculandoProduto}
+                      style={{ padding: '0.4rem 1rem', background: '#2e7d32', color: '#fff', border: 'none', borderRadius: '4px', cursor: vinculandoProduto ? 'wait' : 'pointer', fontWeight: 'bold', fontSize: '0.85rem', whiteSpace: 'nowrap' }}
+                    >
+                      {vinculandoProduto ? '...' : 'Vincular'}
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
       )}
     </div>

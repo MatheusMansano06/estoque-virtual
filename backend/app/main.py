@@ -1998,6 +1998,87 @@ async def baixa_item_individual(request: Request):
         db.close()
 
 
+async def vincular_item_embale(request: Request):
+    """
+    POST /api/embaldes/{embale_id}/itens/{item_id}/vincular
+    Vincula manualmente um item do inbound a um anúncio existente na Olist.
+    Body: {"olist_produto_id", "olist_sku", "olist_nome", "olist_preco"?}
+    Salva também a memória de vínculo (de-para) para inbounds futuros.
+    """
+    db = SessionLocal()
+    try:
+        embale_id = int(request.path_params.get("embale_id"))
+        item_id = int(request.path_params.get("item_id"))
+        data = await request.json()
+
+        olist_produto_id = data.get("olist_produto_id")
+        olist_sku = data.get("olist_sku", "")
+        olist_nome = data.get("olist_nome", "")
+        olist_preco = float(data.get("olist_preco", 0) or 0)
+
+        if not olist_produto_id:
+            return JSONResponse({"erro": "olist_produto_id é obrigatório"}, status_code=400)
+
+        embale = db.query(EmbaleFU).filter(EmbaleFU.id == embale_id).first()
+        if not embale:
+            return JSONResponse({"erro": "Inbound não encontrado"}, status_code=404)
+
+        item = next((i for i in embale.itens if i.id == item_id), None)
+        if not item:
+            return JSONResponse({"erro": "Item não encontrado neste inbound"}, status_code=404)
+
+        # Salva o vínculo no item
+        item.olist_produto_id = str(olist_produto_id)
+        item.olist_sku = olist_sku
+        item.olist_nome = olist_nome
+        item.validado = 1
+        item.validacao_mensagem = None
+        item.data_validacao = datetime.utcnow()
+        db.add(item)
+
+        # Memória de vínculo (de-para): usa SKU/título do inbound como chave,
+        # para casar automaticamente em inbounds futuros.
+        chave_desc = item.titulo_anuncio or item.sku_inbound or ""
+        chave_cod = item.sku_inbound or ""
+        if chave_desc:
+            vinculo = db.query(VinculoOlist).filter(
+                VinculoOlist.nf_descricao == chave_desc,
+                VinculoOlist.olist_produto_id == str(olist_produto_id)
+            ).first()
+            if vinculo:
+                vinculo.nf_codigo = chave_cod
+                vinculo.olist_sku = olist_sku
+                vinculo.olist_nome = olist_nome
+                vinculo.olist_preco = olist_preco
+                vinculo.vezes_usado = (vinculo.vezes_usado or 1) + 1
+                vinculo.atualizado_em = datetime.utcnow()
+            else:
+                db.add(VinculoOlist(
+                    nf_codigo=chave_cod,
+                    nf_descricao=chave_desc,
+                    olist_produto_id=str(olist_produto_id),
+                    olist_sku=olist_sku,
+                    olist_nome=olist_nome,
+                    olist_preco=olist_preco,
+                    vezes_usado=1,
+                ))
+
+        db.commit()
+        return JSONResponse({
+            "sucesso": True,
+            "item_id": item_id,
+            "olist_produto_id": str(olist_produto_id),
+            "olist_nome": olist_nome,
+            "mensagem": f"Vinculado a: {olist_nome}"
+        })
+
+    except Exception as e:
+        db.rollback()
+        return JSONResponse({"erro": str(e)}, status_code=500)
+    finally:
+        db.close()
+
+
 async def encerrar_embale(request: Request):
     """
     POST /api/embaldes/{embale_id}/encerrar
@@ -2076,6 +2157,7 @@ routes = [
     Route("/api/embaldes/{embale_id}/revisao", revisar_baixa_embale, methods=["GET"]),
     Route("/api/embaldes/{embale_id}/confirmar-baixa", confirmar_baixa_embale, methods=["POST"]),
     Route("/api/embaldes/{embale_id}/itens/{item_id}/baixa", baixa_item_individual, methods=["POST"]),
+    Route("/api/embaldes/{embale_id}/itens/{item_id}/vincular", vincular_item_embale, methods=["POST"]),
     Route("/api/embaldes/{embale_id}/encerrar", encerrar_embale, methods=["POST"]),
 ]
 
